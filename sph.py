@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import click
 import importlib.util
 import inspect
@@ -15,8 +16,63 @@ change_type_to_str={
     "T": "Type of file changed (e.g. symbolic link became a file)"
 }
 
-def sort_editables(editables):
-    return (editables, [])
+@dataclass
+class Dependency:
+    full_name: str
+    name: str
+    editable = None
+
+@dataclass
+class Editable:
+    full_name: str
+    name: str
+    conan_path: Path
+    required_lib: [Dependency]
+
+dependency_list = dict()
+
+@dataclass
+class EditableTree:
+    node: Editable
+    children: [Editable]
+
+def get_dependency_from_name(name: str):
+    if name not in dependency_list:
+        dependency_list[name] = Dependency(name, name.split('/')[0])
+
+    return dependency_list[name]
+
+def get_editable_from_dependency(dep: Dependency, editables: [Editable] = []):
+    if not dep.editable:
+        for ed in editables:
+            if dep.name == ed.name:
+                dep.editable = ed
+
+    return dep.editable
+
+def create_editable_dependency(editables):
+    sort_editables = []
+
+    for editable in editables:
+        conanfile_path = str((editable.conan_path / 'conanfile.py').resolve())
+        conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
+        conanfile_module = importlib.util.module_from_spec(conanfile_spec)
+        conanfile_spec.loader.exec_module(conanfile_module)
+        members = inspect.getmembers(conanfile_module, inspect.isclass)
+        all_required_lib = []
+
+        for name, member in members:
+            if conanfile_module.ConanFile in member.mro()[1:]:
+                for k, v in inspect.getmembers(member):
+                    if k == 'requires':
+                        all_required_lib = v
+
+        for other_editable in [x for x in editables if x is not editable]:
+            for dep in all_required_lib:
+                if dep.split('/')[0] == other_editable.name:
+                    dependency = get_dependency_from_name(dep)
+                    dependency.editable = other_editable
+                    editable.required_lib.append(dependency)
 
 def print_index(repo):
     for diff in repo.index.diff(repo.head.commit):
@@ -50,6 +106,8 @@ def publish(ctx, repo, workspace):
         repo.git.add('.')
         repo.git.commit(f'-m {commit_msg}')
 
+    conan_version_tag = repo.head.commit.hexsha[0:10]
+
     click.echo('Updating workspace')
 
     workspace_path = Path(workspace)
@@ -72,18 +130,12 @@ def publish(ctx, repo, workspace):
 
     root_name = workspace_data['root']
 
-    updated_editables_name = [(v['path'], k) for k, v in workspace_data['editables'].items() if (workspace_path.parents[0] / v['path']).resolve() == (repo_path / 'conan').resolve()]
-    non_root_editables = [(v['path'], k) for k, v in workspace_data['editables'].items() if k != root_name and (workspace_path.parents[0] / v['path']).resolve() != (repo_path / 'conan').resolve()]
-    root_editable = [(v['path'], k) for k, v in workspace_data['editables'].items() if k == root_name]
+    updated_editables = [Editable(k, k.split('/')[0], (workspace_path.parents[0] / v['path']).resolve(), list()) for k, v in workspace_data['editables'].items() if (workspace_path.parents[0] / v['path']).resolve() == (repo_path / 'conan').resolve()]
+    editables = [Editable(k, k.split('/')[0], (workspace_path.parents[0] / v['path']).resolve(), list()) for k, v in workspace_data['editables'].items() if (workspace_path.parents[0] / v['path']).resolve() != (repo_path / 'conan').resolve()]
 
-    sorted_to_update_editables, update_to_make= sort_editables(non_root_editables)
-    for editable in sorted_to_update_editables:
-        click.echo(f'Updating editables with path {editable}')
-
-# conanfile_path = str((repo_path / 'conan/conanfile.py').resolve())
-# click.echo(conanfile_path)
-# conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
-# conanfile_module = importlib.util.module_from_spec(conanfile_spec)
-# conanfile_spec.loader.exec_module(conanfile_module)
+    create_editable_dependency(updated_editables + editables)
+    for editable in editables:
+        click.echo(f'Updating editable: {editable.name}')
+        click.echo(editable.required_lib)
 
 be_helpful.add_command(publish)

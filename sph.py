@@ -16,7 +16,7 @@ change_type_to_str={
 }
 
 def sort_editables(editables):
-    return editables
+    return (editables, [])
 
 def print_index(repo):
     for diff in repo.index.diff(repo.head.commit):
@@ -56,8 +56,6 @@ def publish(ctx, repo, workspace):
     if not workspace_path.is_file():
         workspace_path = workspace_path / 'workspace.yml'
 
-    click.echo(workspace_path.resolve())
-
     workspace_data = None
     try:
         with open(workspace_path.resolve(), 'r') as workspace_file:
@@ -73,18 +71,19 @@ def publish(ctx, repo, workspace):
         ctx.abort()
 
     root_name = workspace_data['root']
-    conanfile_path = str((repo_path / 'conan/conanfile.py').resolve())
-    click.echo(conanfile_path)
-    conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
-    conanfile_module = importlib.util.module_from_spec(conanfile_spec)
-    conanfile_spec.loader.exec_module(conanfile_module)
 
-    click.echo(inspect.getmembers(conanfile_module, inspect.isclass))
-    non_root_editables = [(v['path'], k) for k, v in workspace_data['editables'].items() if k != root_name]
+    updated_editables_name = [(v['path'], k) for k, v in workspace_data['editables'].items() if (workspace_path.parents[0] / v['path']).resolve() == (repo_path / 'conan').resolve()]
+    non_root_editables = [(v['path'], k) for k, v in workspace_data['editables'].items() if k != root_name and (workspace_path.parents[0] / v['path']).resolve() != (repo_path / 'conan').resolve()]
     root_editable = [(v['path'], k) for k, v in workspace_data['editables'].items() if k == root_name]
 
-    sorted_to_update_editables, update_to_make = sort_editables(non_root_editables)
-    for editable in sorted_non_root_editables:
+    sorted_to_update_editables, update_to_make= sort_editables(non_root_editables)
+    for editable in sorted_to_update_editables:
         click.echo(f'Updating editables with path {editable}')
+
+# conanfile_path = str((repo_path / 'conan/conanfile.py').resolve())
+# click.echo(conanfile_path)
+# conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
+# conanfile_module = importlib.util.module_from_spec(conanfile_spec)
+# conanfile_spec.loader.exec_module(conanfile_module)
 
 be_helpful.add_command(publish)

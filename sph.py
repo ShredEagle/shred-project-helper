@@ -91,11 +91,8 @@ def print_index(repo):
 
     click.echo(Fore.RESET)
 
-def create_editable_from_workspace(workspace_path_str):
+def create_editable_from_workspace(workspace_path: Path):
     editables = list()
-    workspace_path = Path(workspace_path_str)
-    if not workspace_path.is_file():
-        workspace_path = workspace_path / 'workspace.yml'
 
     workspace_data = None
     try:
@@ -184,7 +181,10 @@ def update_conan_file(updatable, updated_editables):
     with open(updatable.conan_path, 'w') as conanfile:
         conanfile.writelines(file_lines)
 
-def update_editable(updatable: Editable, updated_editables: [Editable]):
+def update_workspace(editable: [Editable], workspace_path: Path):
+    file_lines = list()
+
+def update_editable(updatable: Editable, updated_editables: [Editable], workspace_path: Path):
     update_conan_file(updatable, updated_editables)
     update_push_and_commit(updatable)
     updatable.updated = True
@@ -201,7 +201,11 @@ def be_helpful():
 def publish(ctx, repo, workspace):
     click.echo('Updating workspace')
 
-    editables = create_editable_from_workspace(workspace)
+    workspace_path = Path(workspace_path_str)
+    if not workspace_path.is_file():
+        workspace_path = workspace_path / 'workspace.yml'
+
+    editables = create_editable_from_workspace(workspace_path)
     updated_editables = list()
 
     while not all([e.updated for e in editables]):
@@ -209,7 +213,9 @@ def publish(ctx, repo, workspace):
 
         for updatable in updatables:
             click.echo(f'Updating editable: {updatable.name}')
-            updated_editables.append(update_editable(updatable, updated_editables))
+            updated_editables.append(update_editable(updatable, updated_editables, workspace_path))
+
+    update_workspace(editables, Path(workspace_path))
 
 
     #create_editable_dependency([updated_editable] + editables)

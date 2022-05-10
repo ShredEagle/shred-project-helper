@@ -1,14 +1,23 @@
-from dataclasses import dataclass
-import click
-import importlib.util
-import inspect
-import os
-import yaml
-from git import Repo
-from pathlib import Path
 from colorama import Fore, Back, Style
-import sys
+from dataclasses import dataclass
+from git import Repo
+from github import Github
+from halo import Halo
+from pathlib import Path
+from xdg import xdg_config_home
+
+import click
+import yaml
+
+import ast
+from configparser import ConfigParser
+import os
 import re
+
+#Will work when we use conan 2
+#import sys
+#import importlib.util
+#import inspect
 
 change_type_to_str={
     "D": "New file",
@@ -56,30 +65,39 @@ def get_editable_from_dependency(dep: Dependency, editables: [Editable] = []):
 
 def create_editable_dependency(editable, editables):
     #Avoid polluting conan directory with pycache
-    sys.dont_write_bytecode = True
+    #sys.dont_write_bytecode = True
 
-    conanfile_path = str(editable.conan_path)
-    conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
-    conanfile_module = importlib.util.module_from_spec(conanfile_spec)
-    conanfile_spec.loader.exec_module(conanfile_module)
-    members = inspect.getmembers(conanfile_module, inspect.isclass)
+    #conanfile_path = str(editable.conan_path)
+    #conanfile_spec = importlib.util.spec_from_file_location('*', conanfile_path)
+    #conanfile_module = importlib.util.module_from_spec(conanfile_spec)
+    #conanfile_spec.loader.exec_module(conanfile_module)
+    #members = inspect.getmembers(conanfile_module, inspect.isclass)
     all_required_lib = []
+    with open(editable.conan_path, 'r') as conanfile:
+        conanfile_ast = ast.parse(conanfile.read())
+        for node in ast.iter_child_nodes(conanfile_ast):
+            if isinstance(node, ast.ClassDef):
+                for class_node in ast.iter_child_nodes(node):
+                    if isinstance(class_node, ast.Assign):
+                        for target in class_node.targets:
+                            if target.id == 'requires':
+                                all_required_lib.append([elt.value for elt in class_node.value.elts])
 
-    for name, member in members:
-        if conanfile_module.ConanFile in member.mro()[1:]:
-            for k, v in inspect.getmembers(member):
-                if k == 'requires':
-                    all_required_lib = v
+    #for name, member in members:
+    #    if conanfile_module.ConanFile in member.mro()[1:]:
+    #        for k, v in inspect.getmembers(member):
+    #            if k == 'requires':
+    #                all_required_lib = v
 
-    for other_editable in [x for x in editables if x is not editable]:
-        for dep in all_required_lib:
-            if dep.split('/')[0] == other_editable.name:
-                dependency = get_dependency_from_name(dep)
-                dependency.editable = other_editable
-                editable.required_lib.append(dependency)
+    #for other_editable in [x for x in editables if x is not editable]:
+    #    for dep in all_required_lib:
+    #        if dep.split('/')[0] == other_editable.name:
+    #            dependency = get_dependency_from_name(dep)
+    #            dependency.editable = other_editable
+    #            editable.required_lib.append(dependency)
 
     #Restore pycache creation
-    sys.dont_write_bytecode = False
+    #sys.dont_write_bytecode = False
 
 def print_index(repo):
     for diff in repo.index.diff(repo.head.commit):
@@ -89,24 +107,11 @@ def print_index(repo):
     for path in repo.untracked_files:
         click.echo(f'{Fore.RED}Untracked files: {path}', color=True)
 
-    click.echo(Fore.RESET)
+    click.echo(Fore.RESET, nl=False)
 
-def create_editable_from_workspace(workspace_path: Path):
+def create_editable_from_workspace(workspace_path: Path, workspace_data):
     editables = list()
 
-    workspace_data = None
-    try:
-        with open(workspace_path.resolve(), 'r') as workspace_file:
-            try:
-                workspace_data = yaml.full_load(workspace_file)
-            except yaml.YAMLError as exc:
-                click.echo(f'Can\'t parse file {workspace_path}')
-                click.echo(exc)
-                ctx.abort()
-    except OSError as exc:
-        click.echo(f'Can\'t open file {workspace_path}')
-        click.echo(exc)
-        ctx.abort()
 
     root_name = workspace_data['root']
     workspace_base_path = workspace_path.parents[0]
@@ -138,12 +143,18 @@ def update_push_and_commit(editable):
         print_index(repo)
         add_and_commit = click.confirm('Do you want to add and commit those changes ?')
     else:
-        click.echo(f'{Fore.GREEN}Git repository is clean{Fore.RESET}')
+        click.echo(f'- {Fore.GREEN}Git repository is clean{Fore.RESET}')
 
     if add_and_commit:
         commit_msg = click.prompt(f'Select your commit message', default=f'Publishing {repo_basename} new version')
         repo.git.add('.')
         repo.git.commit(f'-m {commit_msg}')
+    elif number_changed_files > 0:
+        click.get_text_stream('stdout').write('\033[A\r\033[K')
+        click.get_text_stream('stdout').write('\033[A\r\033[K')
+        click.get_text_stream('stdout').write('\033[A\r\033[K')
+        click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}', bold=True),nl=False)
+        click.echo(f'Skipping commit and push')
 
     conan_version_tag = repo.head.commit.hexsha[0:10]
 
@@ -178,11 +189,21 @@ def update_conan_file(updatable, updated_editables):
                     file_lines[i] = replacement
                     click.echo(f'{Fore.YELLOW}{match.group(3)}/{match.group(4)}@{match.group(5)} {Fore.RESET}-> {Fore.CYAN}{match.group(3)}/{updated_editable.repo.head.commit.hexsha[0:10]}@{match.group(5)}{Fore.RESET}')
 
+    click.echo()
+
     with open(updatable.conan_path, 'w') as conanfile:
         conanfile.writelines(file_lines)
 
-def update_workspace(editable: [Editable], workspace_path: Path):
-    file_lines = list()
+def update_workspace(editables: [Editable], workspace_path: Path, workspace_data):
+    for name, path in workspace_data['editables'].items():
+        for editable in editables:
+            match = re.search(rf'(.*)(({editable.name})/(\w+)\@(.*))', name)
+            if match:
+                lib_version = match.group(4)
+                if lib_version != editable.repo.head.commit.hexsha[0:10]:
+                    click.echo(f'{Style.DIM}Switching {Fore.LIGHTCYAN_EX}{editable.name}{Fore.RESET} version in workspace.yml:{Style.RESET_ALL} {Fore.YELLOW}{match.group(3)}/{match.group(4)}@{match.group(5)} {Fore.RESET}-> {Fore.CYAN}{match.group(3)}/{editable.repo.head.commit.hexsha[0:10]}@{match.group(5)}{Fore.RESET}')
+
+
 
 def update_editable(updatable: Editable, updated_editables: [Editable], workspace_path: Path):
     update_conan_file(updatable, updated_editables)
@@ -196,26 +217,73 @@ def be_helpful():
 
 @click.command()
 @click.option("--repo", "-r", default=".", show_default=True)
+@click.option("--github-token", "-gt")
 @click.argument("workspace")
 @click.pass_context
-def publish(ctx, repo, workspace):
-    click.echo('Updating workspace')
+def publish(ctx, repo, github_token, workspace):
+    #Setting up github
+    config_path = xdg_config_home() / 'shred-project-helper/sph.ini'
+    github = None
 
-    workspace_path = Path(workspace_path_str)
+    if not os.path.exists(config_path):
+        config = ConfigParser()
+        click.echo('⚙ Creating config')
+        click.echo()
+        if not github_token:
+            github_username = click.prompt('Github username')
+            github_password = click.prompt('Github password')
+            github = Github(github_username, github_password)
+        else:
+            github = Github(github_token)
+
+        click.echo(github.get_user().get_repos().totalCount)
+        click.echo([repo.name for repo in github.get_user().get_repos()])
+
+    click.echo(f'Publishing library at {repo}')
+    click.echo()
+
+    workspace_path = Path(workspace)
     if not workspace_path.is_file():
         workspace_path = workspace_path / 'workspace.yml'
 
-    editables = create_editable_from_workspace(workspace_path)
+    workspace_data = None
+    try:
+        with open(workspace_path.resolve(), 'r') as workspace_file:
+            try:
+                workspace_data = yaml.full_load(workspace_file)
+            except yaml.YAMLError as exc:
+                click.echo(f'Can\'t parse file {workspace_path}')
+                click.echo(exc)
+                ctx.abort()
+
+    except OSError as exc:
+        click.echo(f'Can\'t open file {workspace_path}')
+        click.echo(exc)
+        ctx.abort()
+    loading_editables_spinner = Halo(text='Retrieving editables', spinner='dots')
+    loading_editables_spinner.start()
+    editables = create_editable_from_workspace(workspace_path, workspace_data)
     updated_editables = list()
+    loading_editables_spinner.succeed()
+    click.echo()
+
+    updating_editables_spinner = Halo(text='Updating editables', spinner='dots')
+    updating_editables_spinner.stop_and_persist('⟳')
+    click.echo()
 
     while not all([e.updated for e in editables]):
         updatables = find_updatable_editable(editables)
 
         for updatable in updatables:
-            click.echo(f'Updating editable: {updatable.name}')
+            click.echo(f'{Style.DIM}Updating editable: {updatable.name}{Style.RESET_ALL}')
             updated_editables.append(update_editable(updatable, updated_editables, workspace_path))
+            click.echo()
 
-    update_workspace(editables, Path(workspace_path))
+    updating_workspace_spinner = Halo(text='Updating workspace', spinner='dots')
+    updating_workspace_spinner.stop_and_persist('⟳')
+    click.echo()
+
+    update_workspace(editables, Path(workspace_path), workspace_data)
 
 
     #create_editable_dependency([updated_editable] + editables)

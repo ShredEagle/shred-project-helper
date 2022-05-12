@@ -16,6 +16,8 @@ halo = "^0.0.31"
 xdg = "^5.1.1"
 PyGithub = "^1.55"
 PyYAML = "^6.0"
+flake8 = "^4.0.1"
+bandit = "^1.7.4"
 
 [tool.poetry.dev-dependencies]
 jedi = "^0.18.1"

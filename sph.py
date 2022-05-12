@@ -1,7 +1,7 @@
 from colorama import Fore, Back, Style
 from dataclasses import dataclass
 from git import Repo
-from github import Github
+from github import Github, enable_console_debug_logging, GithubException, BadCredentialsException, TwoFactorException
 from halo import Halo
 from pathlib import Path
 from xdg import xdg_config_home
@@ -40,6 +40,7 @@ class Editable:
     conan_path: Path
     required_lib: [Dependency]
     repo: Repo
+    gh_org_or_user: str
     updated: bool = False
 
 dependency_list = dict()
@@ -112,26 +113,33 @@ def print_index(repo):
 def create_editable_from_workspace(workspace_path: Path, workspace_data):
     editables = list()
 
-
-    root_name = workspace_data['root']
     workspace_base_path = workspace_path.parents[0]
 
     for name, path in workspace_data['editables'].items():
         project_conan_path = (workspace_base_path / path['path'])
         short_name = name.split('/')[0]
-        editable = Editable(
-            name,
-            short_name,
-            (project_conan_path / 'conanfile.py').resolve(),
-            list(),
-            Repo(project_conan_path.parents[0].resolve())
-        )
-        editables.append(editable)
+        repo = Repo(project_conan_path.parents[0].resolve())
+        remote_url = list(repo.remote('origin').urls)[0]
+        match = re.search(rf'github.com:(.*)/(.*)', remote_url)
+        if match:
+            org = match.group(1)
+            editable = Editable(
+                name,
+                short_name,
+                (project_conan_path / 'conanfile.py').resolve(),
+                list(),
+                repo,
+                org
+            )
+            editables.append(editable)
+        else:
+            raise Exception
 
     for ed in editables:
         create_editable_dependency(ed, editables)
 
     return editables
+
 
 def update_push_and_commit(editable):
     repo = editable.repo
@@ -156,8 +164,6 @@ def update_push_and_commit(editable):
         click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}', bold=True),nl=False)
         click.echo(f'Skipping commit and push')
 
-    conan_version_tag = repo.head.commit.hexsha[0:10]
-
 def find_updatable_editable(editables):
     updatables = list()
     for ed in [ed for ed in editables if not ed.updated]:
@@ -181,7 +187,6 @@ def update_conan_file(updatable, updated_editables):
             name_regex = re.compile(rf'(.*)(({updated_editable.name})/(\w+)\@(.*))"\)(,?)')
             match = name_regex.search(line)
             if match:
-                full_name = match.group(3)
                 lib_version = match.group(4)
 
                 if lib_version != updated_editable.repo.head.commit.hexsha[0:10]:
@@ -204,7 +209,6 @@ def update_workspace(editables: [Editable], workspace_path: Path, workspace_data
                     click.echo(f'{Style.DIM}Switching {Fore.LIGHTCYAN_EX}{editable.name}{Fore.RESET} version in workspace.yml:{Style.RESET_ALL} {Fore.YELLOW}{match.group(3)}/{match.group(4)}@{match.group(5)} {Fore.RESET}-> {Fore.CYAN}{match.group(3)}/{editable.repo.head.commit.hexsha[0:10]}@{match.group(5)}{Fore.RESET}')
 
 
-
 def update_editable(updatable: Editable, updated_editables: [Editable], workspace_path: Path):
     update_conan_file(updatable, updated_editables)
     update_push_and_commit(updatable)
@@ -224,11 +228,31 @@ def publish(ctx, repo, github_token, workspace):
     #Setting up github
     config_path = xdg_config_home() / 'shred-project-helper/sph.ini'
     github = None
+    config = ConfigParser()
 
     if not os.path.exists(config_path):
-        config = ConfigParser()
         click.echo('⚙ Creating config')
         click.echo()
+        config['github'] = {'access_token': None}
+        os.mkdir(xdg_config_home() / 'shred-project-helper')
+        with open(config_path, 'w+') as config_file:
+            config.write(config_file)
+    else:
+        config.read(config_path)
+
+        if not github_token:
+            github_token = config['github']['access_token']
+
+    if github_token and 'access_token' in config['github']:
+        save_token = click.prompt('Save access token to config?')
+        if save_token:
+            config['github']['access_token'] = github_token
+
+
+    click.echo(f'Publishing library at {repo}')
+    click.echo()
+
+    try:
         if not github_token:
             github_username = click.prompt('Github username')
             github_password = click.prompt('Github password')
@@ -236,11 +260,19 @@ def publish(ctx, repo, github_token, workspace):
         else:
             github = Github(github_token)
 
-        click.echo(github.get_user().get_repos().totalCount)
-        click.echo([repo.name for repo in github.get_user().get_repos()])
+        user = github.get_user()
+        click.echo(f'Logged in github as {user.login}')
 
-    click.echo(f'Publishing library at {repo}')
-    click.echo()
+    except BadCredentialsException as e:
+        click.echo('Wrong github credentials')
+        ctx.abort()
+    except TwoFactorException as e:
+        click.echo('Can\'t use credentials for account with 2FA. Please use an access token.')
+        ctx.abort()
+    except GithubException as e:
+        click.echo('Github issue')
+        click.echo(e)
+        ctx.abort()
 
     workspace_path = Path(workspace)
     if not workspace_path.is_file():
@@ -260,6 +292,7 @@ def publish(ctx, repo, github_token, workspace):
         click.echo(f'Can\'t open file {workspace_path}')
         click.echo(exc)
         ctx.abort()
+
     loading_editables_spinner = Halo(text='Retrieving editables', spinner='dots')
     loading_editables_spinner.start()
     editables = create_editable_from_workspace(workspace_path, workspace_data)

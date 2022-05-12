@@ -1,2 +1,0 @@
-/usr/bin/llvm-ar qc libproject2.a CMakeFiles/project2.dir/utils.cpp.o
-/usr/bin/llvm-ranlib libproject2.a

@@ -1,0 +1,1 @@
+/usr/bin/clang++ -m64 -stdlib=libstdc++ -g -m64 -fsanitize=address -fsanitize=leak -fsanitize=undefined CMakeFiles/project1.dir/main.cpp.o -o project1-  /home/franz/sph/tests/test-projects/project2/build_ws/Debug/src/app/project2/libproject2.a /home/franz/sph/tests/test-projects/project3/build_ws/Debug/src/app/project3/libproject3.a 

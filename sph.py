@@ -85,11 +85,16 @@ def create_editable_dependency(editable, editables):
                     if isinstance(class_node, ast.Assign):
                         for target in class_node.targets:
                             if target.id == 'requires':
-                                all_required_lib.append([elt.value
+                                all_required_lib += [elt.value
                                                          for elt in
                                                          class_node.value.elts
-                                                         ])
-    editable.required_lib = all_required_lib
+                                                         ]
+    for other_editable in [x for x in editables if x is not editable]:
+        for dep in all_required_lib:
+            if dep.split('/')[0] == other_editable.name:
+                dependency = get_dependency_from_name(dep)
+                dependency.editable = other_editable
+                editable.required_lib.append(dependency)
 
 
 def print_index(repo):
@@ -158,20 +163,26 @@ def wait_for_run_to_complete(gh_repo_client, repo):
         time.sleep(2)
 
     waiting_for_run.stop()
-    click.echo()
 
+    run_progress = Halo(f'Workflow {current_run.status}. Waiting for the end')
+    run_progress.start()
+    status = current_run.status
     if current_run:
         while current_run.status != 'completed':
-            delete_term_n_previous_line(1)
-            click.echo(f'Workflow {current_run.status}. Waiting for the end')
+            if current_run.status != status:
+                run_progress.stop()
+                run_progress = Halo(f'Workflow {current_run.status}. Waiting for the end')
+                run_progress.start()
+
+            status = current_run.status
             current_run = gh_repo_client.get_workflow_run(current_run.id)
             time.sleep(2)
 
-        delete_term_n_previous_line(1)
         if current_run.conclusion == 'success':
-            Halo('Workflow completed with success').succeed()
+            run_progress.succeed('Workflow completed with success')
+            click.echo()
         else:
-            Halo('Workflow failed').fail()
+            run_progress.fail('Workflow failed')
             raise click.Abort()
     else:
         Halo('Can\'t find a workflow run associated with this commit').fail()
@@ -231,11 +242,11 @@ def check_state_of_repo_and_commit(editable):
         )
         repo.git.add('.')
         repo.git.commit(f'-m {commit_msg}')
-        delete_term_n_previous_line(4)
+        delete_term_n_previous_line(4 + number_changed_files)
         Halo(f'Change commited with message {commit_msg}').succeed()
         click.echo()
     elif number_changed_files > 0:
-        delete_term_n_previous_line(3)
+        delete_term_n_previous_line(3 + number_changed_files)
         click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}',
                                bold=True), nl=False)
         click.echo('Skipping commit and push')
@@ -254,7 +265,7 @@ def commit_conanfile_changes(editable, conanfile_update_names):
             version_update_str = [
                 f'{name} to {version}' for name, version in conanfile_update_names
             ]
-            commit_msg = f'Updating {version_update_str}'
+            commit_msg = f'Updating {"".join(version_update_str)}'
             editable.repo.git.add('.')
             editable.repo.git.commit(f'-m {commit_msg}')
             Halo('Conanfile version update commited automatically').succeed()
@@ -305,7 +316,6 @@ def find_updatable_editable(editables):
     updatables = list()
     for ed in [ed for ed in editables if not ed.updated]:
         updatable = True
-        click.echo(ed.required_lib)
         for lib in ed.required_lib:
             if not lib.editable.updated:
                 updatable = False
@@ -344,7 +354,7 @@ def update_conan_file(updatable, updated_editables):
                     )
                     conanfile_update_names.append(
                         (
-                            updated_editable,
+                            updated_editable.name,
                             updated_editable.repo.head.commit.hexsha[0:10]
                         )
                     )
@@ -369,12 +379,14 @@ def update_conan_file(updatable, updated_editables):
 def update_workspace(
         editables: [Editable], workspace_path: Path, workspace_data
 ):
+    updated_workspace = False
     for name, path in workspace_data['editables'].copy().items():
         for editable in editables:
             match = re.search(rf'(.*)(({editable.name})/(\w+)\@(.*))', name)
             if match:
                 lib_version = match.group(4)
                 if lib_version != editable.repo.head.commit.hexsha[0:10]:
+                    updated_workspace = True
                     new_version = (
                         f'{match.group(3)}/' +
                         f'{editable.repo.head.commit.hexsha[0:10]}' +
@@ -397,6 +409,9 @@ def update_workspace(
                     )
                     workspace_data['editables'][new_version] = path
                     del workspace_data['editables'][old_version]
+
+    if updated_workspace:
+        click.echo()
 
     with open(workspace_path, 'w') as file:
         file.write(yaml.dump(workspace_data))

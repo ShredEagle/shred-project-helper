@@ -1,10 +1,10 @@
 editables:
-    project3/d8fb55a602@adnn/develop:
-        path: ../project3/conan
-    project2/7e16d9da5b@adnn/develop:
-        path: ../project2/conan
-    project1/local:
-        path: ../project1/conan
+  project1/local:
+    path: ../project1/conan
+  project2/3a454f7ea4@adnn/develop:
+    path: ../project2/conan
+  project3/b414e7a6e9@adnn/develop:
+    path: ../project3/conan
 layout: layout
-workspace_generator: cmake
 root: project1/local
+workspace_generator: cmake

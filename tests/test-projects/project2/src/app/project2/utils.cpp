@@ -3,5 +3,5 @@
 
 std::string project2::hello()
 {
-    return project3::hell() + "o";
+    return project3::hell() + "o2";
 }

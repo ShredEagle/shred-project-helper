@@ -26,10 +26,8 @@ class Project1Conan(ConanFile):
     }
 
     requires = (
-        ("boost/1.77.0"),
-
-        ("project2/7e16d9da5b@adnn/develop"),
-        ("project3/d8fb55a602@adnn/develop"),
+        ("project2/3a454f7ea4@adnn/develop"),
+        ("project3/b414e7a6e9@adnn/develop"),
     )
 
 
@@ -76,7 +74,7 @@ class Project1Conan(ConanFile):
             # avoid path.join, on Windows it outputs '\', which is a string escape sequence.
             config.write("include(\"{}\")\n".format("${CMAKE_CURRENT_LIST_DIR}/conan_paths.cmake"))
             config.write("set({} {})\n".format("BUILD_tests", self.options.build_tests))
-            config.write("set({} {})\n".format("BUILD_Grapito_DEVMODE", self.options.build_devmode))
+            config.write("set({} {})\n".format("BUILD_Project1_DEVMODE", self.options.build_devmode))
             version = self._build_version()
             if version: config.write("set({} {})\n".format("BUILD_VERSION", version))
 

@@ -28,7 +28,7 @@ jobs:
       # Disable macos while spdlog crashes its compiler
       # see: https://github.com/conan-io/conan-center-index/issues/8480
       os: >-
-        ["ubuntu-latest", "windows-latest"]
+        ["ubuntu-latest", "windows-2019"]
       deployrecipe_userchannel: adnn/stable
       step_artifacts: true
       version: ${{ needs.extract_tag.outputs.version }}

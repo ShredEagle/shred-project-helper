@@ -23,9 +23,7 @@ class Project3Conan(ConanFile):
         "shared": False,
     }
 
-    requires = (
-        ("boost/1.77.0"),
-    )
+    requires = ()
 
 
     generators = "cmake_paths", "cmake_find_package_multi", "CMakeToolchain"

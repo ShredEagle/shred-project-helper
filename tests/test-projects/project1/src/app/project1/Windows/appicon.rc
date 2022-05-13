@@ -1,0 +1,3 @@
+// NOTE Ad 2022/02/14: Using the special name GLFW_ICON
+// has GLFW set this icon on the application window.
+GLFW_ICON ICON DISCARDABLE "Windows/appicon.ico"

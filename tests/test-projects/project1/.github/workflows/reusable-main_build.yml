@@ -20,7 +20,7 @@ on:
         description: >-
           Stringified JSON array listing the target runner OSes.
         default: >-
-          ["ubuntu-latest", "windows-latest", "macos-11"]
+          ["ubuntu-latest", "windows-2019", "macos-11"]
         required: true
         type: string
       version:

@@ -8,8 +8,8 @@ include(cmake/include.cmake)
 
 cmc_include_conan_configuration()
 
-option(BUILD_Project2_DEVMODE
-       "Build Grapito application in development mode, not for public release."
-       FALSE)
+include(cmc-install)
+cmc_install_root_component_config(${PROJECT_NAME})
+cmc_register_source_package(${PROJECT_NAME})
 
 add_subdirectory(src)

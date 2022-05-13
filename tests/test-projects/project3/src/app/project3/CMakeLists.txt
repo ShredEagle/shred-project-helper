@@ -4,7 +4,7 @@ set(${TARGET_NAME}_HEADERS
     utils.h
 )
 
-set(${TARGET_NAME}_HEADERS
+set(${TARGET_NAME}_SOURCE
     utils.cpp
 )
 
@@ -31,10 +31,6 @@ set_target_properties(${TARGET_NAME} PROPERTIES
 ##
 
 cmc_find_dependencies()
-
-target_link_libraries(${TARGET_NAME}
-    PUBLIC Boost::boost
-)
 
 ##
 ## Install

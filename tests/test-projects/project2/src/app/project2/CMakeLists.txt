@@ -4,7 +4,7 @@ set(${TARGET_NAME}_HEADERS
     utils.h
 )
 
-set(${TARGET_NAME}_HEADERS
+set(${TARGET_NAME}_SOURCE
     utils.cpp
 )
 
@@ -35,7 +35,6 @@ cmc_find_dependencies()
 target_link_libraries(${TARGET_NAME}
     PUBLIC
         sph::project3
-        Boost::boost
 )
 
 ##

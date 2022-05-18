@@ -1,2 +1,6 @@
-# shred-project-helper
-Shred tools to make it easier to work on projects
+# SPH workflow
+## Load and save config
+mostly github access token for the moment
+## Connect to github
+## Create editables from workspace file
+* connect to github

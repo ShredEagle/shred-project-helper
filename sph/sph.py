@@ -3,76 +3,25 @@ import os
 import re
 import time
 from configparser import ConfigParser
-from dataclasses import dataclass
 from pathlib import Path
 
 import click
 import yaml
 from colorama import Fore, Style
 from git import Repo
-from github import (BadCredentialsException,  # enable_console_debug_logging,
-                    Github, GithubException, TwoFactorException)
+from github import (BadCredentialsException, Github, GithubException,
+                    TwoFactorException)
 from halo import Halo
 from xdg import xdg_config_home
 
-# Will work when we use conan 2
-# import sys
-# import importlib.util
-# import inspect
-
-change_type_to_str = {
-    "D": "New file",
-    "A": "Deleted file",
-    "R": "Renamed file",
-    "M": "Modified file",
-    "T": "Type of file changed (e.g. symbolic link became a file)"
-}
+from sph.git import (CantCommitException, CantMergeException,
+                     get_number_changed_file, print_index, sph_commit,
+                     sph_merge, sph_push)
+from sph.utils import delete_term_n_previous_line, Editable
 
 github_client = None
 
-
-@dataclass
-class Dependency:
-    full_name: str
-    name: str
-    editable = None
-
-
-@dataclass
-class Editable:
-    full_name: str
-    name: str
-    conan_path: Path
-    required_lib: [Dependency]
-    repo: Repo
-    gh_org_or_user: str
-    gh_repo: str
-    updated: bool = False
-
-
 dependency_list = dict()
-
-
-def delete_term_n_previous_line(n):
-    for i in range(n):
-        click.get_text_stream('stdout').write('\033[A\r\033[K')
-
-
-def get_dependency_from_name(name: str):
-    global dependency_list
-    if name not in dependency_list:
-        dependency_list[name] = Dependency(name, name.split('/')[0])
-
-    return dependency_list[name]
-
-
-def get_editable_from_dependency(dep: Dependency, editables: [Editable] = []):
-    if not dep.editable:
-        for ed in editables:
-            if dep.name == ed.name:
-                dep.editable = ed
-
-    return dep.editable
 
 
 def create_editable_dependency(editable, editables):
@@ -85,29 +34,13 @@ def create_editable_dependency(editable, editables):
                     if isinstance(class_node, ast.Assign):
                         for target in class_node.targets:
                             if target.id == 'requires':
-                                all_required_lib += [elt.value
-                                                         for elt in
-                                                         class_node.value.elts
-                                                         ]
+                                all_required_lib += [
+                                    elt.value for elt in class_node.value.elts
+                                ]
     for other_editable in [x for x in editables if x is not editable]:
         for dep in all_required_lib:
             if dep.split('/')[0] == other_editable.name:
-                dependency = get_dependency_from_name(dep)
-                dependency.editable = other_editable
-                editable.required_lib.append(dependency)
-
-
-def print_index(repo):
-    for diff in repo.index.diff(repo.head.commit):
-        click.echo(f'{Fore.GREEN}{change_type_to_str[diff.change_type]}:' +
-                   f' {diff.a_path}', color=True)
-    for diff in repo.index.diff(None):
-        click.echo(f'{Fore.RED}{change_type_to_str[diff.change_type]}:' +
-                   f' {diff.a_path}', color=True)
-    for path in repo.untracked_files:
-        click.echo(f'{Fore.RED}Untracked files: {path}', color=True)
-
-    click.echo(Fore.RESET, nl=False)
+                editable.required_lib.append(other_editable)
 
 
 def create_editable_from_workspace(workspace_path: Path, workspace_data):
@@ -130,8 +63,7 @@ def create_editable_from_workspace(workspace_path: Path, workspace_data):
                 (project_conan_path / 'conanfile.py').resolve(),
                 list(),
                 repo,
-                org,
-                gh_repo
+                github_client.get_repo(f'{org}/{gh_repo}')
             )
             editables.append(editable)
         else:
@@ -143,20 +75,29 @@ def create_editable_from_workspace(workspace_path: Path, workspace_data):
     return editables
 
 
-def wait_for_run_to_complete(gh_repo_client, repo):
-    waiting_for_run = Halo('Waiting for workflow to start', spinner='dots')
+def checking_workflow(editable):
+    waiting_for_run = Halo('Waiting for workflow status', spinner='dots')
     waiting_for_run.start()
     current_run = None
     for i in range(10):
-        runs_queued = gh_repo_client.get_workflow_runs(
-            branch='develop', status='queued'
+        runs_queued = editable.gh_repo_client.get_workflow_runs(
+            branch=editable.repo.active_branch.name, status='queued'
         )
-        runs_in_progress = gh_repo_client.get_workflow_runs(
-            branch='develop', status='in_progress'
+        runs_in_progress = editable.gh_repo_client.get_workflow_runs(
+            branch=editable.repo.active_branch.name, status='in_progress'
         )
-        if runs_queued.totalCount > 0 or runs_in_progress.totalCount > 0:
-            for run in runs_queued:
-                if run.head_sha == repo.head.commit.hexsha:
+        runs_completed = editable.gh_repo_client.get_workflow_runs(
+            branch=editable.repo.active_branch.name, status='completed'
+        )
+        if (
+            runs_queued.totalCount > 0
+            or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
+        ):
+            for run in (
+                    list(runs_queued)
+                    + list(runs_in_progress) + list(runs_completed)
+            ):
+                if run.head_sha == editable.repo.head.commit.hexsha:
                     current_run = run
             if current_run:
                 break
@@ -171,11 +112,13 @@ def wait_for_run_to_complete(gh_repo_client, repo):
         while current_run.status != 'completed':
             if current_run.status != status:
                 run_progress.stop()
-                run_progress = Halo(f'Workflow {current_run.status}. Waiting for the end')
+                run_progress = Halo(f'Workflow {current_run.status}.' +
+                                    ' Waiting for the end')
                 run_progress.start()
 
             status = current_run.status
-            current_run = gh_repo_client.get_workflow_run(current_run.id)
+            current_run = editable.gh_repo_client.get_workflow_run(
+                current_run.id)
             time.sleep(2)
 
         if current_run.conclusion == 'success':
@@ -192,7 +135,11 @@ def wait_for_run_to_complete(gh_repo_client, repo):
 def is_there_a_completed_run(gh_repo_client, repo):
     # We did not push look for a completed run
     runs_completed = gh_repo_client.get_workflow_runs(
-        branch='develop', status='completed'
+        branch=repo.active_branch.name, status='completed'
+    )
+
+    runs_completed = gh_repo_client.get_workflow_runs(
+        branch=repo.active_branch.name, status='completed'
     )
 
     run_is_completed = False
@@ -205,29 +152,11 @@ def is_there_a_completed_run(gh_repo_client, repo):
 
 
 def check_state_of_repo_and_commit(editable):
-    repo = editable.repo
     add_and_commit = False
 
-    if repo.active_branch.name != 'develop':
-        click.echo('You need to be on the develop branch to update dependency')
-        switch_branch = click.prompt('Switch branch to develop')
-
-        if switch_branch:
-            repo.heads.develop.checkout()
-            delete_term_n_previous_line(2)
-            Halo(text="Switched repo to develop").succeed()
-            click.echo()
-        else:
-            Halo(text='Could not switch to the develop branch').fail()
-            raise click.Abort()
-
-    number_changed_files = len(repo.index.diff(None))
-    + len(repo.index.diff('HEAD'))
-    + len(repo.untracked_files)
-
-    if number_changed_files > 0:
+    if editable.repo.is_dirty():
         click.echo('You have some file in your index')
-        print_index(repo)
+        print_index(editable)
         add_and_commit = click.confirm(
             'Do you want to add and commit those changes ?'
         )
@@ -237,37 +166,79 @@ def check_state_of_repo_and_commit(editable):
 
     if add_and_commit:
         commit_msg = click.prompt(
-            'Select your commit message',
+            'Type in your commit message',
             default=f'Publishing {editable.name} new version'
         )
-        repo.git.add('.')
-        repo.git.commit(f'-m {commit_msg}')
-        delete_term_n_previous_line(4 + number_changed_files)
+        number_deleted_lines = 3 + get_number_changed_file(editable)
+        try:
+            sph_commit(
+                editable,
+                '.',
+                commit_msg,
+            )
+        except CantCommitException:
+            Halo('Could not commit your repo changes').fail()
+            raise click.Abort()
+
+        delete_term_n_previous_line(number_deleted_lines)
         Halo(f'Change commited with message {commit_msg}').succeed()
         click.echo()
-    elif number_changed_files > 0:
-        delete_term_n_previous_line(3 + number_changed_files)
+    elif editable.repo.is_dirty():
+        delete_term_n_previous_line(2 + get_number_changed_file(editable))
         click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}',
                                bold=True), nl=False)
-        click.echo('Skipping commit and push')
+        click.echo('Skipping commit')
         return False
-
     return True
 
 
-def commit_conanfile_changes(editable, conanfile_update_names):
-    number_changed_files = len(editable.repo.index.diff(None))
-    + len(editable.repo.index.diff('HEAD'))
-    + len(editable.repo.untracked_files)
+def merge_into_develop(editable):
+    click.echo(f'We are on {editable.repo.active_branch.name}.')
+    click.echo('We need to be on the develop branch to update dependency')
+    merge_branch = click.confirm('Do you want to merge the branch')
+    click.echo()
 
-    if number_changed_files > 0:
+    if merge_branch:
+        try:
+            # merging into develop
+            sph_merge(
+                editable,
+                editable.repo.active_branch.name,
+                'develop',
+                f'Merging {editable.repo.active_branch.name} into' +
+                ' develop')
+        except CantMergeException as e:
+            Halo('Could not merge your branch.' +
+                 ' Please do it manually').fail()
+            click.echo(e)
+            raise click.Abort()
+
+        Halo(text="Merge repo").succeed()
+        click.echo()
+    else:
+        Halo(text='Aborting because we need the merge to happen.').fail()
+        raise click.Abort()
+
+
+def commit_conanfile_changes(editable, conanfile_update_names):
+
+    if editable.repo.is_dirty():
         try:
             version_update_str = [
-                f'{name} to {version}' for name, version in conanfile_update_names
+                f'{name}'
+                for name, version in conanfile_update_names
             ]
-            commit_msg = f'Updating {"".join(version_update_str)}'
-            editable.repo.git.add('.')
-            editable.repo.git.commit(f'-m {commit_msg}')
+            commit_msg = f'Updating {", ".join(version_update_str)}'
+            try:
+                sph_commit(
+                    editable,
+                    'conan/conanfile.py',
+                    commit_msg
+                )
+            except CantCommitException:
+                Halo('Could not commit conanfile automatically').fail()
+                raise click.Abort()
+
             Halo('Conanfile version update commited automatically').succeed()
             click.echo()
         except Exception:
@@ -275,49 +246,12 @@ def commit_conanfile_changes(editable, conanfile_update_names):
             raise click.Abort()
 
 
-def push_to_github(editable):
-    gh_repo_client = github_client.get_repo(
-        f'{editable.gh_org_or_user}/{editable.gh_repo}'
-    )
-
-    commit = gh_repo_client.get_commit('develop')
-
-    need_to_push = commit.sha != editable.repo.head.commit.hexsha
-    if need_to_push:
-        we_need_to_push = Halo('Pushing to github', spinner='dots')
-        we_need_to_push.start()
-        res = editable.repo.remote('origin').push()
-        if len(res) == 0:
-            we_need_to_push.fail('Cannot push to github. Aborting')
-            raise click.Abort()
-        else:
-            we_need_to_push.succeed('Pushed to github')
-            click.echo()
-
-
-def wait_for_workflow(editable):
-    gh_repo_client = github_client.get_repo(
-        f'{editable.gh_org_or_user}/{editable.gh_repo}'
-    )
-    completed_run = Halo('Looking for a completed run')
-    completed_run.start()
-    if is_there_a_completed_run(gh_repo_client, editable.repo):
-        completed_run.succeed('There is a completed run for this commit. ' +
-                              'Skipping workflow run')
-        click.echo()
-        return
-    else:
-        completed_run.stop()
-
-    wait_for_run_to_complete(gh_repo_client, editable.repo)
-
-
 def find_updatable_editable(editables):
     updatables = list()
     for ed in [ed for ed in editables if not ed.updated]:
         updatable = True
         for lib in ed.required_lib:
-            if not lib.editable.updated:
+            if not lib.updated:
                 updatable = False
 
         if updatable:
@@ -417,13 +351,10 @@ def update_workspace(
         file.write(yaml.dump(workspace_data))
 
     repo = Repo(workspace_path.parents[0])
-    number_changed_files = len(repo.index.diff(None))
-    + len(repo.index.diff('HEAD'))
-    + len(repo.untracked_files)
 
-    if number_changed_files > 0:
+    if repo.is_dirty():
         repo.git.add('.')
-        repo.git.commit('-m updating workspace')
+        repo.git.commit('-m "updating workspace"')
 
     we_need_to_push = Halo('Pushing workspace to github', spinner='dots')
     we_need_to_push.start()
@@ -435,18 +366,30 @@ def update_workspace(
     else:
         we_need_to_push.succeed('Pushed workspace to github')
 
+
 def update_editable(
         updatable: Editable,
         updated_editables: [Editable],
         workspace_path: Path):
-    clean = check_state_of_repo_and_commit(updatable)
-    conanfile_update_names = update_conan_file(updatable, updated_editables)
-    if clean:
-        commit_conanfile_changes(updatable, conanfile_update_names)
-    else:
-        Halo('Can\'t auto update conan file without a clean repo').warn()
-    push_to_github(updatable)
-    wait_for_workflow(updatable)
+    updated = False
+
+    while not updated:
+        clean = check_state_of_repo_and_commit(updatable)
+        conanfile_update_names = update_conan_file(
+            updatable, updated_editables)
+        if clean:
+            commit_conanfile_changes(updatable, conanfile_update_names)
+        else:
+            Halo('Can\'t auto update conan file without a clean repo').warn()
+
+        sph_push(updatable)
+        checking_workflow(updatable)
+
+        if updatable.repo.active_branch.name == 'develop':
+            updated = True
+        else:
+            merge_into_develop(updatable)
+
     updatable.updated = True
     return updatable
 
@@ -457,11 +400,10 @@ def be_helpful():
 
 
 @click.command()
-@click.option("--repo", "-r", default=".", show_default=True)
 @click.option("--github-token", "-gt")
 @click.argument("workspace")
 @click.pass_context
-def publish(ctx, repo, github_token, workspace):
+def publish(ctx, github_token, workspace):
     global github_client
     # Setting up github
     config_path = xdg_config_home() / 'shred-project-helper/sph.ini'
@@ -470,7 +412,7 @@ def publish(ctx, repo, github_token, workspace):
     if not os.path.exists(config_path):
         click.echo('⚙ Creating config')
         click.echo()
-        config['github'] = {'access_token': None}
+        config['github'] = {'access_token': ''}
         os.mkdir(xdg_config_home() / 'shred-project-helper')
         with open(config_path, 'w+') as config_file:
             config.write(config_file)
@@ -480,12 +422,14 @@ def publish(ctx, repo, github_token, workspace):
         if not github_token:
             github_token = config['github']['access_token']
 
-    if github_token and 'access_token' in config['github']:
-        save_token = click.prompt('Save access token to config?')
+    if github_token and 'access_token' not in config['github']:
+        save_token = click.confirm('Save access token to config?')
         if save_token:
             config['github']['access_token'] = github_token
+            with open(config_path, 'w+') as config_file:
+                config.write(config_file)
 
-    click.echo(f'Publishing library at {repo}')
+    click.echo('Updating all library in workspace')
     click.echo()
 
     try:

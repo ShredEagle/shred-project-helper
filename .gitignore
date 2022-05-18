@@ -131,3 +131,7 @@ dmypy.json
 #test build folder
 build_ws
 build
+/tests/test-projects/project1/.git/
+/tests/test-projects/project2/.git/
+/tests/test-projects/project3/.git/
+/tests/test-projects/workspace/.git/

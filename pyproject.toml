@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sph"
-version = "0.1.9"
+version = "0.2.5"
 description = ""
 authors = ["François Poizat <francois.poizat@gmail.com>"]
 
@@ -12,8 +12,8 @@ GitPython = "^3.1.27"
 colorama = "^0.4.4"
 halo = "^0.0.31"
 xdg = "^5.1.1"
-PyGithub = "^1.55"
-PyYAML = "^6.0"
+PyGithub = "1.54"
+PyYAML = "5.4.1"
 
 [tool.poetry.dev-dependencies]
 pylama = "^8.3.8"

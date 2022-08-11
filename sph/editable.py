@@ -39,12 +39,14 @@ def create_editable_from_workspace(
         short_name = name.split('/')[0]
         repo = Repo(project_conan_path.parents[0].resolve())
         remote_url = list(repo.remote('origin').urls)[0]
-        match = re.search(r'github.com:(.*)/(.*).git', remote_url)
+        match = re.search(r'github.com:(.*)/([^.]*)(\.git)?', remote_url)
 
         if match and github_client:
             org = match.group(1)
             gh_repo = match.group(2)
         elif github_client:
+            click.echo()
+            click.echo(f'There is no github repository for {name}')
             raise click.Abort()
 
         editable = Editable(

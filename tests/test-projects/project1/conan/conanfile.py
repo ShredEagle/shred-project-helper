@@ -31,7 +31,7 @@ class Project1Conan(ConanFile):
     )
 
 
-    generators = "cmake_paths", "cmake_find_package_multi", "CMakeToolchain"
+    generators = "CMakeDeps", "CMakeToolchain"
     build_policy = "missing"
     # Otherwise, conan removes the imported imgui backends after build()
     # they are still required for the CMake config phase of package()

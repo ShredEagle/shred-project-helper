@@ -1,6 +1,7 @@
 il semble que publish touch le fichier conan/conanfile.py
 devrait pouvoir commit si dirty mais rien de staged
 doit s'arreter si le conanfile est dirty
+mettre le fichier workspace updater dans le commit de workspace
 # SPH workflow
 ## Load and save config
 mostly github access token for the moment

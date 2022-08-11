@@ -14,6 +14,7 @@ from halo import Halo
 
 from sph.publish import publish
 from sph.editable import create_editable_from_workspace
+from sph.workflow import workflow_group
 
 def rmtree_on_error(function, path, excinfo):
     Halo(f'Could not delete {path}').fail()
@@ -203,6 +204,7 @@ def be_helpful():
     pass
 
 
+be_helpful.add_command(cleanup)
 be_helpful.add_command(publish)
 be_helpful.add_command(setup)
-be_helpful.add_command(cleanup)
+be_helpful.add_command(workflow_group)

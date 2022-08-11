@@ -24,6 +24,7 @@ bandit = "^1.7.4"
 
 [tool.poetry.scripts]
 sph = "sph.sph:be_helpful"
+workflow = "sph.workflow:be_helpful"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

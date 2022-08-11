@@ -300,7 +300,7 @@ def update_workspace(
 
     if repo.is_dirty():
         repo.git.add('.')
-        repo.git.commit('-m "updating workspace"')
+        repo.git.commit('-m updating workspace')
 
     we_need_to_push = Halo('Pushing workspace to github', spinner='dots')
     we_need_to_push.start()

@@ -83,14 +83,12 @@ def cleanup(force, workspace, clean_cwd):
         delete_spinner = None
         if force:
             delete_confirm = force
-            delete_spinner = Halo(f'Deleting {path_to_delete}')
-            delete_spinner.start()
         else:
             delete_confirm = click.confirm(f'Delete {path_to_delete}')
-            delete_spinner = Halo(f'Deleting {path_to_delete}')
-            delete_spinner.start()
 
         if delete_confirm:
+            delete_spinner = Halo(f'Deleting {path_to_delete}')
+            delete_spinner.start()
             shutil.rmtree(path_to_delete, onerror=rmtree_on_error)
 
             delete_spinner.stop()

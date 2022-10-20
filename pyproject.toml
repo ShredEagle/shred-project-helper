@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sph"
-version = "0.2.6"
+version = "0.2.8"
 description = ""
 authors = ["François Poizat <francois.poizat@gmail.com>"]
 

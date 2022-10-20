@@ -18,6 +18,7 @@ from sph.git import (CantCommitException, CantMergeException,
                      sph_merge, sph_push)
 from sph.utils import delete_term_n_previous_line, Editable
 from sph.editable import create_editable_from_workspace
+from sph.config import configCreate, configSaveToken
 
 github_client = None
 
@@ -25,7 +26,7 @@ def checking_workflow(editable):
     waiting_for_run = Halo('Waiting for workflow status', spinner='dots')
     waiting_for_run.start()
     current_run = None
-    for i in range(10):
+    for i in range(1):
         runs_queued = editable.gh_repo_client.get_workflow_runs(
             branch=editable.repo.active_branch.name, status='queued'
         )
@@ -346,28 +347,11 @@ def update_editable(
 def publish(github_token, workspace):
     global github_client
     # Setting up github
-    config_path = xdg_config_home() / 'shred-project-helper/sph.ini'
-    config = ConfigParser()
+    config, config_path = configCreate()
 
-    if not os.path.exists(config_path):
-        click.echo('⚙ Creating config')
-        click.echo()
-        config['github'] = {'access_token': ''}
-        os.mkdir(xdg_config_home() / 'shred-project-helper')
-        with open(config_path, 'w+') as config_file:
-            config.write(config_file)
-    else:
-        config.read(config_path)
+    configSaveToken(config, config_path, github_token)
 
-        if not github_token:
-            github_token = config['github']['access_token']
-
-    if github_token and 'access_token' not in config['github']:
-        save_token = click.confirm('Save access token to config?')
-        if save_token:
-            config['github']['access_token'] = github_token
-            with open(config_path, 'w+') as config_file:
-                config.write(config_file)
+    github_token = config['github']['access_token']
 
     click.echo('Updating all library in workspace')
     click.echo()
@@ -400,36 +384,9 @@ def publish(github_token, workspace):
         click.echo(e)
         raise click.Abort()
 
-    workspace_path = Path(workspace)
-    if not workspace_path.is_file():
-        workspace_path = workspace_path / 'workspace.yml'
-
-    workspace_data = None
-    try:
-        with open(workspace_path.resolve(), 'r') as workspace_file:
-            try:
-                workspace_data = yaml.full_load(workspace_file)
-            except yaml.YAMLError as exc:
-                click.echo(f'Can\'t parse file {workspace_path}')
-                click.echo(exc)
-                raise click.Abort()
-
-    except OSError as exc:
-        click.echo(f'Can\'t open file {workspace_path}')
-        click.echo(exc)
-        raise click.Abort()
-
-    loading_editables_spinner = Halo(
-        text='Retrieving editables', spinner='dots'
+    editables, workspace_data, workspace_path = create_editable_from_workspace(
+        workspace, github_client
     )
-    loading_editables_spinner.start()
-
-    editables = create_editable_from_workspace(
-        workspace_path, workspace_data, github_client
-    )
-
-    loading_editables_spinner.succeed()
-    click.echo()
 
     Halo(
         text='Updating editables'

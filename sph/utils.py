@@ -1,26 +1,33 @@
-import typing
-from pathlib import Path
-from dataclasses import dataclass
+import re
 
 import click
-from git import Repo
-from github import Repository
 
 
 def delete_term_n_previous_line(n):
     for i in range(n):
         click.get_text_stream('stdout').write('\033[A\r\033[K')
 
+def extract_info_from_conan_ref(conan_ref):
+    match = re.search(r'(\w+)\/([^@]+)(@(\w+)\/(\w+)#?(\w+)?)?', conan_ref)
+    if len(match.groups()) == 3:
+        return (
+            match.group(1),
+            match.group(2),
+            "", "", ""
+        )
+    if len(match.groups()) == 6:
+        return (
+            match.group(1),
+            match.group(2),
+            match.group(4),
+            match.group(5),
+            "",
+        )
 
-Editable = typing.NewType('Editable', None)
-
-
-@dataclass
-class Editable:
-    full_name: str
-    name: str
-    conan_path: Path
-    required_lib: [Editable]
-    repo: Repo
-    gh_repo_client: Repository
-    updated: bool = False
+    return (
+        match.group(1),
+        match.group(2),
+        match.group(4),
+        match.group(5),
+        match.group(6),
+    )

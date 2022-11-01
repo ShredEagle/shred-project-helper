@@ -5,20 +5,21 @@ from pathlib import Path
 import click
 import yaml
 
-from sph.editable import ConanRefDescriptor
+from sph.editable import ConanRefDescriptor, Editable
 
 Workspace = typing.NewType('Workspace', None)
 
 @dataclass
 class Workspace:
-    root: ConanRefDescriptor
-    editables = []
+    root: list[ConanRefDescriptor]
+    editables: list[Editable]
     path: Path
     data = None
     folder_path: Path
 
     def __init__(self, workspace):
 
+        self.editables = []
         self.path = Path(workspace)
         if not self.path.is_file():
             self.path = self.path / "workspace.yml"
@@ -38,13 +39,14 @@ class Workspace:
             click.echo(exc)
             raise click.Abort()
 
-        self.root = ConanRefDescriptor(self.data["root"])
+        root_data = self.data["root"]
+        if not isinstance(root_data, list):
+            root_data = [root_data]
+
+        self.root = [ConanRefDescriptor(root) for root in root_data]
 
         for name, path in self.data["editables"].items():
             self.editables.append((ConanRefDescriptor(name), self.folder_path / Path(path["path"])))
 
     def __str__(self):
-        ret = f"{self.path}:\n"
-        for (e, p) in self.editables:
-            ret += str(e)
-        return ret
+        return self.path.name

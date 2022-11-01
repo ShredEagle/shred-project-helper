@@ -7,7 +7,7 @@ from pathlib import Path
 from colorama import Fore, Style
 import yaml
 import click
-from git import Repo
+from git.repo import Repo
 from github import Repository
 from halo import Halo
 
@@ -15,10 +15,6 @@ from sph.utils import extract_info_from_conan_ref
 
 def t(level):
     return "  " * level
-
-Editable = typing.NewType('Editable', None)
-
-ExternalLib = typing.NewType("ExternalLib", None)
 
 @dataclass
 class ConanRefDescriptor:
@@ -28,7 +24,7 @@ class ConanRefDescriptor:
     user: str
     channel: str
     revision: str
-    conflicts: [str]
+    conflicts: list[str]
 
     def __init__(self, ref):
         name, version, user, channel, revision = extract_info_from_conan_ref(
@@ -70,8 +66,8 @@ class ConanRefDescriptor:
 class Editable:
     ref: ConanRefDescriptor
     conan_path: Path
-    required_local_lib: [ConanRefDescriptor]
-    required_external_lib: [ConanRefDescriptor]
+    required_local_lib: list[ConanRefDescriptor]
+    required_external_lib: list[ConanRefDescriptor]
     repo: Repo
     gh_repo_client: Repository
 
@@ -129,7 +125,7 @@ def create_editable_from_workspace(workspace, github_client=None):
             gh_repo = match.group(2)
         elif github_client:
             click.echo()
-            click.echo(f"There is no github repository for {name}")
+            click.echo(f"There is no github repository for {conan_ref.name}")
             raise click.Abort()
 
         editable = Editable(

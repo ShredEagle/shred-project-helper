@@ -38,6 +38,7 @@ def checking_workflow(editable):
                 break
         time.sleep(2)
 
+    waiting_for_run.stop()
     if current_run:
         if current_run.status == 'in_progress':
             click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}',

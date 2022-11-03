@@ -1,8 +1,11 @@
 import ast
+import asyncio
 import typing
 import re
+import pdb
 from dataclasses import dataclass
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from colorama import Fore, Style
 import yaml
@@ -11,75 +14,8 @@ from git.repo import Repo
 from github import Repository
 from halo import Halo
 
-from sph.utils import extract_info_from_conan_ref
-
-def t(level):
-    return "  " * level
-
-@dataclass
-class ConanRefDescriptor:
-    conan_ref: str
-    name: str
-    version: str
-    user: str
-    channel: str
-    revision: str
-    conflicts: list[str]
-
-    def __init__(self, ref):
-        name, version, user, channel, revision = extract_info_from_conan_ref(
-                ref
-            )
-        self.conan_ref = ref
-        self.name = name
-        self.version = version
-        self.user = user
-        self.channel = channel
-        self.revision = revision
-        self.conflicts = []
-
-    def __eq__(self, other):
-        self.conan_ref = other.conan_ref
-
-    def __str__(self, level=0):
-        return f'''{t(level)}{self.conan_ref}:
-{t(level + 1)}name: {self.name}
-{t(level + 1)}version: {self.version}
-{t(level + 1)}user: {self.user}
-{t(level + 1)}channel: {self.channel}
-{t(level + 1)}revision: {self.revision}
-{t(level + 1)}conflicts: {self.conflicts}
-'''
-
-    def print_check(self, level=0):
-        if len(self.conflicts) > 0:
-            ret = f"{t(level)}{self.conan_ref} conflicts with "
-            for c in self.conflicts:
-                for name in c:
-                    ret += f"{Fore.RED}{name}{Fore.RESET} "
-            Halo(ret).fail()
-        else:
-            ret = f"{t(level)}{self.conan_ref} is ok"
-            Halo(ret).succeed()
-
-@dataclass
-class Editable:
-    ref: ConanRefDescriptor
-    conan_path: Path
-    required_local_lib: list[ConanRefDescriptor]
-    required_external_lib: list[ConanRefDescriptor]
-    repo: Repo
-    gh_repo_client: Repository
-
-    def __str__(self, level=0):
-        local_lib_str = "\n"
-        for lib in self.required_local_lib:
-            local_lib_str += lib.__str__(level + 1)
-        ext_lib_str = "\n"
-        for lib in self.required_external_lib:
-            ext_lib_str += lib.__str__(level + 2)
-
-        return f"{t(level)}{self.ref.conan_ref}:\n" + f"{t(level)}Local dependencies:{local_lib_str}{t(level)}" + f"External dependencies:{ext_lib_str}"
+from sph.utils import extract_info_from_conan_ref, t
+from sph.conan_ref import ConanRefDescriptor
 
 def create_editable_dependency(editable, editables):
     all_required_lib = []
@@ -109,41 +45,109 @@ def create_editable_dependency(editable, editables):
 
 
 def create_editable_from_workspace(workspace, github_client=None):
+    editable_list = []
 
-    loading_editables_spinner = Halo(text="Retrieving editables", spinner="dots")
-    loading_editables_spinner.start()
+    for conan_ref, project_conan_path in workspace.local_refs:
+        if project_conan_path.exists():
+            conan_ref.is_local = True
+            editable_list.append(Editable(conan_ref, project_conan_path, github_client))
+        else:
+            conan_ref.is_local = False
 
-    editables = []
+    for ed in editable_list:
+        create_editable_dependency(ed, editable_list)
 
-    for conan_ref, project_conan_path in workspace.editables:
-        repo = Repo(project_conan_path.parents[0].resolve())
-        remote_url = list(repo.remote("origin").urls)[0]
-        match = re.search(r"github.com:(.*)/([^.]*)(\.git)?", remote_url)
+    return editable_list
 
-        if match and github_client:
-            org = match.group(1)
-            gh_repo = match.group(2)
-        elif github_client:
-            click.echo()
-            click.echo(f"There is no github repository for {conan_ref.name}")
-            raise click.Abort()
+class Editable:
+    ref: ConanRefDescriptor
+    conan_path: Path
+    required_local_lib: list[ConanRefDescriptor]
+    required_external_lib: list[ConanRefDescriptor]
+    repo: Repo
+    gh_repo: Repository
 
-        editable = Editable(
-            conan_ref,
-            (project_conan_path / "conanfile.py").resolve(),
-            list(),
-            list(),
-            repo,
-            github_client.get_repo(f"{org}/{gh_repo}") if github_client else None,
+    def __init__(self, conan_ref, conan_path, gh_client):
+        self.ref = conan_ref
+        self.conan_path = conan_path / "conanfile.py"
+        self.repo = Repo(self.conan_path.parents[1].resolve())
+        self.required_external_lib = []
+        self.required_local_lib = []
+        self.gh_repo_name = None
+        self.gh_repo = None
+        self.future = None
+
+        remote_url = list(self.repo.remote("origin").urls)[0]
+        match = re.search(r"github.com:(.*)/(.*(?=\.g)|.*)", remote_url)
+
+        if match and gh_client:
+            self.org = match.group(1)
+            self.gh_repo_name = match.group(2)
+            self.gh_client = gh_client
+
+    def setup_gh_repo_task(self):
+        try:
+            self.gh_repo = self.gh_client.get_repo(f"{self.org}/{self.gh_repo_name}")
+            return True
+        except Exception:
+            return False
+        
+    def setup_gh_repo(self, callback):
+        if self.gh_repo_name:
+            if not self.gh_repo:
+                exe = ThreadPoolExecutor(max_workers=1)
+                f = exe.submit(self.setup_gh_repo_task)
+                f.add_done_callback(callback)
+            else:
+                callback(True)
+        
+
+    def __str__(self, level=0):
+        local_lib_str = "\n"
+        for lib in self.required_local_lib:
+            local_lib_str += lib.__str__(level + 1)
+        ext_lib_str = "\n"
+        for lib in self.required_external_lib:
+            ext_lib_str += lib.__str__(level + 2)
+
+        return f"{t(level)}{self.ref.conan_ref}:\n" + f"{t(level)}Local dependencies:{local_lib_str}{t(level)}" + f"External dependencies:{ext_lib_str}"
+    
+    def get_dependency_from_name(self, name):
+       return next(filter(lambda x: x.name == name, self.required_external_lib + self.required_local_lib))
+
+    def checking_workflow(self):
+        current_run = None
+        runs_queued = self.gh_repo.get_workflow_runs(
+            branch=self.repo.active_branch.name, status='queued'
         )
-        editables.append(editable)
+        runs_in_progress = self.gh_repo.get_workflow_runs(
+            branch=self.repo.active_branch.name, status='in_progress'
+        )
+        runs_completed = self.gh_repo.get_workflow_runs(
+            branch=self.repo.active_branch.name, status='completed'
+        )
+        if (
+            runs_queued.totalCount > 0
+            or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
+        ):
+            for run in (
+                    list(runs_queued)
+                    + list(runs_in_progress) + list(runs_completed)
+            ):
+                if run.head_sha == self.repo.head.commit.hexsha:
+                    current_run = run
 
-    for ed in editables:
-        create_editable_dependency(ed, editables)
+        if current_run:
+            if current_run.status == 'in_progress':
+                return 'progress'
+            elif current_run.status == 'completed':
+                if current_run.conclusion == 'success':
+                    return 'success'
+                else:
+                    return 'error'
+        else:
+            return 'no_workflow'
 
-    loading_editables_spinner.succeed()
-
-    return editables
 
 def get_editable_status(editable, dependency_graph):
     pass

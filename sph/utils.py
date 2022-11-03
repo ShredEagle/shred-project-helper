@@ -2,6 +2,8 @@ import re
 
 import click
 
+def t(level):
+    return "  " * level
 
 def delete_term_n_previous_line(n):
     for i in range(n):

@@ -10,47 +10,6 @@ from sph.workspace import Workspace
 from sph.config import configCreate, configSaveToken
 from sph.editable import create_editable_from_workspace, get_editable_status
 
-def checking_workflow(editable):
-    waiting_for_run = Halo('CI for workflow status', spinner='dots')
-    waiting_for_run.start()
-    current_run = None
-    for i in range(1):
-        runs_queued = editable.gh_repo_client.get_workflow_runs(
-            branch=editable.repo.active_branch.name, status='queued'
-        )
-        runs_in_progress = editable.gh_repo_client.get_workflow_runs(
-            branch=editable.repo.active_branch.name, status='in_progress'
-        )
-        runs_completed = editable.gh_repo_client.get_workflow_runs(
-            branch=editable.repo.active_branch.name, status='completed'
-        )
-        if (
-            runs_queued.totalCount > 0
-            or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
-        ):
-            for run in (
-                    list(runs_queued)
-                    + list(runs_in_progress) + list(runs_completed)
-            ):
-                if run.head_sha == editable.repo.head.commit.hexsha:
-                    current_run = run
-            if current_run:
-                break
-        time.sleep(2)
-
-    waiting_for_run.stop()
-    if current_run:
-        if current_run.status == 'in_progress':
-            click.echo(click.style(f'{Fore.YELLOW}ℹ {Fore.RESET}',
-                                   bold=True), nl=False)
-            click.echo('CI in progress')
-        elif current_run.status == 'completed':
-            if current_run.conclusion == 'success':
-                Halo('CI completed with success').succeed()
-            else:
-                Halo('CI failed').fail()
-    else:
-        Halo('Can\'t find a workflow run associated with this commit').fail()
 
 @click.command()
 @click.option("--github-token", "-gt")

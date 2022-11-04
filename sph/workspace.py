@@ -47,6 +47,10 @@ class Workspace:
         for name, path in self.data["editables"].items():
             self.local_refs.append((ConanRefDescriptor(name), self.folder_path / Path(path["path"])))
 
+    def get_dependency_from_name(self, name):
+       return next(filter(lambda x: x[0].name == name, self.local_refs))[0]
+
+
     def __str__(self):
         return self.path.name
 

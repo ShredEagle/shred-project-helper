@@ -76,6 +76,7 @@ class Editable:
         self.gh_repo_name = None
         self.gh_repo = None
         self.future = None
+        self.current_run = None
 
         remote_url = list(self.repo.remote("origin").urls)[0]
         match = re.search(r"github.com:(.*)/(.*(?=\.g)|.*)", remote_url)
@@ -86,6 +87,9 @@ class Editable:
             self.gh_client = gh_client
 
     def setup_gh_repo_task(self):
+        if self.gh_repo:
+            return True
+
         try:
             self.gh_repo = self.gh_client.get_repo(f"{self.org}/{self.gh_repo_name}")
             return True
@@ -94,13 +98,9 @@ class Editable:
         
     def setup_gh_repo(self, callback):
         if self.gh_repo_name:
-            if not self.gh_repo:
-                exe = ThreadPoolExecutor(max_workers=1)
-                f = exe.submit(self.setup_gh_repo_task)
-                f.add_done_callback(callback)
-            else:
-                callback(True)
-        
+            exe = ThreadPoolExecutor(max_workers=1)
+            f = exe.submit(self.setup_gh_repo_task)
+            f.add_done_callback(callback)
 
     def __str__(self, level=0):
         local_lib_str = "\n"
@@ -115,38 +115,43 @@ class Editable:
     def get_dependency_from_name(self, name):
        return next(filter(lambda x: x.name == name, self.required_external_lib + self.required_local_lib))
 
-    def checking_workflow(self):
-        current_run = None
-        runs_queued = self.gh_repo.get_workflow_runs(
-            branch=self.repo.active_branch.name, status='queued'
-        )
-        runs_in_progress = self.gh_repo.get_workflow_runs(
-            branch=self.repo.active_branch.name, status='in_progress'
-        )
-        runs_completed = self.gh_repo.get_workflow_runs(
-            branch=self.repo.active_branch.name, status='completed'
-        )
-        if (
-            runs_queued.totalCount > 0
-            or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
-        ):
-            for run in (
-                    list(runs_queued)
-                    + list(runs_in_progress) + list(runs_completed)
-            ):
-                if run.head_sha == self.repo.head.commit.hexsha:
-                    current_run = run
+    def checking_workflow_task(self, force=False):
+        if self.current_run and not force:
+            return self.current_run
 
-        if current_run:
-            if current_run.status == 'in_progress':
-                return 'progress'
-            elif current_run.status == 'completed':
-                if current_run.conclusion == 'success':
-                    return 'success'
-                else:
-                    return 'error'
-        else:
-            return 'no_workflow'
+        try:
+            runs_queued = self.gh_repo.get_workflow_runs(
+                branch=self.repo.active_branch.name, status='queued'
+            )
+            runs_in_progress = self.gh_repo.get_workflow_runs(
+                branch=self.repo.active_branch.name, status='in_progress'
+            )
+            runs_completed = self.gh_repo.get_workflow_runs(
+                branch=self.repo.active_branch.name, status='completed'
+            )
+            if (
+                runs_queued.totalCount > 0
+                or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
+            ):
+                for run in (
+                        list(runs_queued)
+                        + list(runs_in_progress) + list(runs_completed)
+                ):
+                    if run.head_sha == self.repo.head.commit.hexsha:
+                        self.current_run = run
+
+            if self.current_run:
+                return self.current_run
+            else:
+                return None
+        except Exception:
+            return None
+
+    def check_workflow(self, callback):
+        if self.gh_repo_name:
+            exe = ThreadPoolExecutor(max_workers=1)
+            f = exe.submit(self.checking_workflow_task)
+            f.add_done_callback(callback)
 
 
 def get_editable_status(editable, dependency_graph):

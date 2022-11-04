@@ -20,6 +20,7 @@ class ConanRefDescriptor:
         self.channel = channel
         self.revision = revision
         self.conflicts = set() 
+        self.date = None
 
     def __eq__(self, other):
         return self.conan_ref == other.conan_ref

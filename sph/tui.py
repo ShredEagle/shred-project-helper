@@ -255,22 +255,25 @@ class WorkspaceTUI:
         if len(dependency.conan_ref.conflicts) == 0:
             return []
 
+        ref = self.current_editable.get_dependency_from_name(dependency.conan_ref.name)
         base_list = [
             "Choose a version to resolve conflict (press enter to select)",
             f'In {self.current_editable.ref.conan_ref} at {self.current_editable.conan_path.resolve()}:',
-            Conflict(self.current_editable.get_dependency_from_name(dependency.conan_ref.name))
+            Conflict(ref, self.get_editable_from_ref(ref))
         ]
         for conflict in dependency.conan_ref.conflicts:
             if isinstance(conflict, Workspace):
+                ref = conflict.get_dependency_from_name(dependency.conan_ref.name)
                 base_list += [
                         f'In {conflict.path.name}:',
-                        Conflict(conflict.get_dependency_from_name(dependency.conan_ref.name))
+                        Conflict(ref, self.get_editable_from_ref(ref))
                 ]
             else:
                 editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_name(conflict.name))
+                ref = editable.get_dependency_from_name(dependency.conan_ref.name)
                 base_list += [
                     f'In {editable.ref.conan_ref} at {editable.conan_path.resolve()}:',
-                    Conflict(editable.get_dependency_from_name(dependency.conan_ref.name))
+                    Conflict(ref, self.get_editable_from_ref(ref))
                 ]
 
         return base_list 

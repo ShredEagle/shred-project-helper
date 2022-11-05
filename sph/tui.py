@@ -77,10 +77,54 @@ class DependencyItem:
 
     def __str__(self):
         if self.is_selected:
-            return f"  S {self.conan_ref.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
+            return f"  S {self.conan_ref.package.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
         if self.is_local:
-            return f"  L {self.conan_ref.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
+            return f"  L {self.conan_ref.package.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
         return f"  X {self.conan_ref.conan_ref}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
+
+class GitInfo:
+    def __init__(self, editable):
+        self.editable = editable
+
+    def __str__(self):
+        if self.editable.repo:
+            return ' Git is clean' if not self.editable.repo.is_dirty() else ' Git is dirty'
+        return ''
+
+class GithubInfo:
+    def __init__(self, editable):
+        self.editable = editable
+
+    def __str__(self):
+        if self.editable.gh_repo is not None:
+            if self.editable.gh_repo is not False:
+                return ' Github is ready'
+            else:
+                return ' No repo on github'
+        else:
+            return 'Waiting for github repo'
+
+        return ''
+
+class WorkflowInfo:
+    def __init__(self, editable):
+        self.editable = editable
+
+    def __str__(self):
+        if self.editable.current_run is not None:
+            if not self.editable.current_run:
+                return 'No CI'
+            if self.editable.current_run.status == 'in_progress':
+                return 'CI in progress'
+            if self.editable.current_run.status == 'completed':
+                if self.editable.current_run.conclusion == 'success':
+                    return ' CI success'
+                else:
+                    return ' CI failed'
+        else:
+            return 'Waiting for CI status'
+
+        return ''
 
 class WorkspaceTUI:
 
@@ -156,31 +200,14 @@ class WorkspaceTUI:
         else:
             self.create_non_local_root_data(item)
 
-    def create_item_list_from_editable(self, editable):
-        pass
-
-    def set_workflow_status(self, widget):
-        def workflow_status_cb(f):
-            widget.remove_item(self.workflow_msg)
-            if f.result() is None or (f.result().status == 'completed' and f.result().conclusion != 'success'):
-                widget._view_items.append(' CI failed')
-            elif f.result().status == 'in_progress':
-                widget._view_items.append('CI in progress')
-            elif f.result().status == 'completed' and f.result().conclusion == 'success':
-                widget._view_items.append(' CI success')
-
-        return workflow_status_cb
-
     def create_local_root_data(self, root):
-        self.current_editable = [e for e in self.editable_list if e.ref.conan_ref is root.conan_ref.conan_ref][0]
-        self.root_info.add_item_list([' Git is clean' if not self.current_editable.repo.is_dirty() else ' Git is dirty'])
+        self.current_editable = [e for e in self.editable_list if e.package is root.conan_ref.package][0]
+        self.root_info.add_item_list([
+            GitInfo(self.current_editable),
+            GithubInfo(self.current_editable),
+            WorkflowInfo(self.current_editable)])
 
-        if self.current_editable.gh_client:
-            wait_message = 'Waiting for github repo'
-            self.root_info.add_item_list([wait_message])
-            self.current_editable.setup_gh_repo(self.github_setup_callback(wait_message))
-
-        item_list = [self.current_editable.ref.conan_ref]
+        item_list = [self.current_editable.package.name]
 
         for dep in self.current_editable.required_local_lib:
             item_list.append(DependencyItem(dep, True))
@@ -198,18 +225,6 @@ class WorkspaceTUI:
         self.root_tree.clear()
         self.root_info.clear()
 
-    def github_setup_callback(self, message):
-        def callback(f):
-            self.root_info.remove_item(message)
-            if f.result() == True:
-                self.workflow_msg = 'Waiting for CI status'
-                self.root_info.add_item_list([' Github is ready', self.workflow_msg])
-                self.current_editable.check_workflow(self.set_workflow_status(self.root_info))
-            if f.result() == False:
-                self.root_info.add_item_list([' Github is not ready'])
-        
-        return callback
-
     def avoid_select_root(self):
         # Hack to avoid selecting the Root
         if self.root_tree.get_selected_item_index() == 1:
@@ -223,19 +238,19 @@ class WorkspaceTUI:
         dependency = self.root_tree.get()
         dependency.is_selected = True
 
-        self.dependency_editable = self.get_editable_from_ref(dependency.conan_ref)
-
         self.dep_repo_info.set_title(f'{dependency.conan_ref.conan_ref} repo info')
 
-        repo_item_list = []
+        self.dependency_editable = self.get_editable_from_ref(dependency.conan_ref)
         if self.dependency_editable:
-            repo_item_list = self.create_local_dep_item_list(self.dependency_editable, dependency)
+            repo_item_list = [
+                    GitInfo(self.dependency_editable),
+                    GithubInfo(self.dependency_editable),
+                    WorkflowInfo(self.dependency_editable)
+                    ]
             self.dep_repo_info.add_item_list(repo_item_list)
-            self.dependency_editable.setup_gh_repo(self.display_editable_info)
 
 
         self.dep_info.set_title(f'{dependency.conan_ref.conan_ref} info')
-
 
         item_list = []
         item_list += self.create_dep_item_list(dependency)
@@ -243,36 +258,28 @@ class WorkspaceTUI:
         self.dep_info.add_item_list(item_list)
         self.master.move_focus(self.dep_info)
 
-    def create_local_dep_item_list(self, editable, dependency):
-        self.editable_github_info = "Waiting for github"
-        item_list = [
-            ' Git is clean' if not editable.repo.is_dirty() else ' Git is dirty',
-            self.editable_github_info,
-        ]
-        return item_list
-
     def create_dep_item_list(self, dependency):
         if len(dependency.conan_ref.conflicts) == 0:
             return []
 
-        ref = self.current_editable.get_dependency_from_name(dependency.conan_ref.name)
+        ref = self.current_editable.get_dependency_from_package(dependency.conan_ref.package)
         base_list = [
             "Choose a version to resolve conflict (press enter to select)",
-            f'In {self.current_editable.ref.conan_ref} at {self.current_editable.conan_path.resolve()}:',
+            f'In {self.current_editable.package} at {self.current_editable.conan_path.resolve()}:',
             Conflict(ref, self.get_editable_from_ref(ref))
         ]
         for conflict in dependency.conan_ref.conflicts:
             if isinstance(conflict, Workspace):
-                ref = conflict.get_dependency_from_name(dependency.conan_ref.name)
+                ref = conflict.get_dependency_from_package(dependency.conan_ref.package)
                 base_list += [
                         f'In {conflict.path.name}:',
                         Conflict(ref, self.get_editable_from_ref(ref))
                 ]
             else:
-                editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_name(conflict.name))
-                ref = editable.get_dependency_from_name(dependency.conan_ref.name)
+                editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_package(conflict))
+                ref = editable.get_dependency_from_package(dependency.conan_ref.package)
                 base_list += [
-                    f'In {editable.ref.conan_ref} at {editable.conan_path.resolve()}:',
+                    f'In {editable.package} at {editable.conan_path.resolve()}:',
                     Conflict(ref, self.get_editable_from_ref(ref))
                 ]
 
@@ -304,7 +311,7 @@ class WorkspaceTUI:
         self.dep_info.add_item_list([f"No git repo for {root.conan_ref.conan_ref}"])
 
     def get_editable_from_ref(self, conan_ref):
-        filtered_editable = [e for e in self.editable_list if e.ref.name == conan_ref.name]
+        filtered_editable = [e for e in self.editable_list if e.package == conan_ref.package]
 
         if len(filtered_editable) == 1:
             return filtered_editable[0]
@@ -313,44 +320,44 @@ class WorkspaceTUI:
         editable_version_by_name = dict()
 
         for ref, _ in workspace.local_refs:
-            if ref.name not in editable_version_by_name:
-                editable_version_by_name[ref.name] = dict()
+            if ref.package.name not in editable_version_by_name:
+                editable_version_by_name[ref.package.name] = dict()
 
-            if ref.conan_ref not in editable_version_by_name[ref.name]:
-                editable_version_by_name[ref.name][ref.conan_ref] = set()
+            if ref.conan_ref not in editable_version_by_name[ref.package.name]:
+                editable_version_by_name[ref.package.name][ref.conan_ref] = set()
 
-            editable_version_by_name[ref.name][ref.conan_ref].add(workspace)
+            editable_version_by_name[ref.package.name][ref.conan_ref].add(workspace)
 
 
 
         for e in self.editable_list:
             for ref in e.required_local_lib:
-                if ref.name not in editable_version_by_name:
-                    editable_version_by_name[ref.name] = dict()
+                if ref.package.name not in editable_version_by_name:
+                    editable_version_by_name[ref.package.name] = dict()
 
-                if ref.conan_ref not in editable_version_by_name[ref.name]:
-                    editable_version_by_name[ref.name][ref.conan_ref] = set()
+                if ref.conan_ref not in editable_version_by_name[ref.package.name]:
+                    editable_version_by_name[ref.package.name][ref.conan_ref] = set()
 
-                editable_version_by_name[ref.name][ref.conan_ref].add(e.ref)
+                editable_version_by_name[ref.package.name][ref.conan_ref].add(e.package)
 
             for ref in e.required_external_lib:
-                if ref.name not in editable_version_by_name:
-                    editable_version_by_name[ref.name] = dict()
+                if ref.package.name not in editable_version_by_name:
+                    editable_version_by_name[ref.package.name] = dict()
 
-                if ref.conan_ref not in editable_version_by_name[ref.name]:
-                    editable_version_by_name[ref.name][ref.conan_ref] = set()
+                if ref.conan_ref not in editable_version_by_name[ref.package.name]:
+                    editable_version_by_name[ref.package.name][ref.conan_ref] = set()
 
-                editable_version_by_name[ref.name][ref.conan_ref].add(e.ref)
+                editable_version_by_name[ref.package.name][ref.conan_ref].add(e.package)
 
         for e in self.editable_list:
             for req in e.required_local_lib:
-                for ref_needed, value in editable_version_by_name[req.name].items():
-                    if (e.ref not in value) and (ref_needed is not req.conan_ref):
+                for ref_needed, value in editable_version_by_name[req.package.name].items():
+                    if (e.package not in value) and (ref_needed is not req.conan_ref):
                         req.conflicts.update(value)
 
             for req in e.required_external_lib:
-                for ref_needed, value in editable_version_by_name[req.name].items():
-                    if (e.ref not in value) and (ref_needed is not req.conan_ref):
+                for ref_needed, value in editable_version_by_name[req.package.name].items():
+                    if (e.package not in value) and (ref_needed is not req.conan_ref):
                         req.conflicts.update(value)
 
     def back_to_ws(self):

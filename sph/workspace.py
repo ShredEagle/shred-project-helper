@@ -1,21 +1,12 @@
-import typing
-from dataclasses import dataclass
 from pathlib import Path
+from typing_extensions import Any
 
 import click
 import yaml
 
-from sph.editable import Editable
-from sph.conan_ref import ConanRefDescriptor
+from sph.conan_ref import ConanRef
 
-@dataclass
 class Workspace:
-    root: list[ConanRefDescriptor]
-    local_refs: list[ConanRefDescriptor]
-    path: Path
-    data = None
-    folder_path: Path
-
     def __init__(self, workspace):
 
         self.local_refs = []
@@ -42,13 +33,13 @@ class Workspace:
         if not isinstance(root_data, list):
             root_data = [root_data]
 
-        self.root = [ConanRefDescriptor(root) for root in root_data]
+        self.root = [ConanRef(root) for root in root_data]
 
-        for name, path in self.data["editables"].items():
-            self.local_refs.append((ConanRefDescriptor(name), self.folder_path / Path(path["path"])))
+        for ref, path in self.data["editables"].items():
+            self.local_refs.append((ConanRef(ref), self.folder_path / Path(path["path"])))
 
-    def get_dependency_from_name(self, name):
-       return next(filter(lambda x: x[0].name == name, self.local_refs))[0]
+    def get_dependency_from_package(self, package):
+       return next(filter(lambda x: x[0].package == package, self.local_refs))[0]
 
 
     def __str__(self):

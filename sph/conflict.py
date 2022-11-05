@@ -25,10 +25,10 @@ class Conflict:
 
     # FIX: this needs to wait for the gh_repo before being executed
     def fill_date_from_github(self):
-        match = re.search(r"/([\w]{10})", self.ref.conan_ref)
+            match = re.search(r"/([\w]{10})", self.ref.conan_ref)
 
-        if match:
-            self.ref.date = " - Waiting for date"
-            if self.editable.gh_repo:
-                commit = self.editable.gh_repo.get_commit(match.group(1)).commit
-                self.ref.date = commit.author.date.strftime(" - %Y/%m/%d %H:%M:%S")
+            if match:
+                self.ref.date = " - Waiting for date"
+                if self.editable.gh_repo is not None and self.editable.gh_repo is not False:
+                    commit = self.editable.gh_repo.get_commit(match.group(1)).commit
+                    self.ref.date = commit.author.date.strftime(" - %Y/%m/%d %H:%M:%S")

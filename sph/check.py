@@ -8,7 +8,7 @@ from github import (BadCredentialsException, Github, GithubException,
 
 from sph.workspace import Workspace
 from sph.config import configCreate, configSaveToken
-from sph.editable import create_editable_from_workspace, get_editable_status
+from sph.editable import create_editable_from_workspace
 
 
 @click.command()
@@ -90,8 +90,6 @@ def check(github_token, workspace):
             editable_version_by_name[ref.name][ref.conan_ref].add(e.ref.conan_ref)
 
     for e in editables:
-        status = get_editable_status(e, editable_version_by_name)
-
         for req in e.required_local_lib:
             for ref_needed, value in editable_version_by_name[req.name].items():
                 if (e.ref.conan_ref not in value) and (ref_needed is not req.conan_ref):

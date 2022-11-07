@@ -146,7 +146,7 @@ class WorkspaceTUI:
         self.ws_menu.add_item_list(self.workspaces)
 
         self.root_list = self.master.add_scroll_menu('Roots', 0, 3, row_span=2, column_span=13)
-        self.root_list.add_key_command(py_cui.keys.KEY_BACKSPACE, self.back_to_ws)
+        self.root_list.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_to_ws)
         self.root_list.add_key_command(py_cui.keys.KEY_ENTER, self.select_root)
         self.root_list.add_text_color_rule('^  [^\s]*', py_cui.YELLOW_ON_BLACK, 'contains', match_type="regex")
         self.root_list.add_text_color_rule('^\* [^\s]*', py_cui.GREEN_ON_BLACK, 'contains', match_type="regex")
@@ -163,6 +163,7 @@ class WorkspaceTUI:
         self.root_tree.add_key_command(py_cui.keys.KEY_ENTER, self.select_dependency)
         self.root_tree.add_key_command(py_cui.keys.KEY_UP_ARROW, self.avoid_select_root)
         self.root_tree.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_to_roots)
+        self.root_tree.add_key_command(py_cui.keys.get_ascii_from_char('?'), self.show_root_tree_help)
 
         self.dep_repo_info = self.master.add_scroll_menu(f'Dependency repo info', 2, 6, row_span=2, column_span=10)
         self.dep_repo_info.set_selectable(False)
@@ -175,6 +176,12 @@ class WorkspaceTUI:
 
         self.master.move_focus(self.ws_menu)
 
+    def show_root_tree_help(self):
+        menu =self.master.show_menu_popup('Dependency tree help',
+                                    [
+                                        'Enter     select dependency',
+                                        'c         commit root repo'
+                                    ], lambda x: None)
 
     def select_workspace(self):
         self.root_list.clear()
@@ -191,6 +198,10 @@ class WorkspaceTUI:
         self.root_list.add_item_list([RootItem(ref, path) for (ref, path) in item.workspace.local_refs if ref.conan_ref in [x.conan_ref for x in item.workspace.root]])
         self.master.move_focus(self.root_list)
 
+    def return_to_ws(self):
+        self.root_list.clear()
+        self.master.move_focus(self.ws_menu)
+
     def select_root(self):
         item = self.root_list.get()
 
@@ -200,35 +211,10 @@ class WorkspaceTUI:
         else:
             self.create_non_local_root_data(item)
 
-    def create_local_root_data(self, root):
-        self.current_editable = [e for e in self.editable_list if e.package is root.conan_ref.package][0]
-        self.root_info.add_item_list([
-            GitInfo(self.current_editable),
-            GithubInfo(self.current_editable),
-            WorkflowInfo(self.current_editable)])
-
-        item_list = [self.current_editable.package.name]
-
-        for dep in self.current_editable.required_local_lib:
-            item_list.append(DependencyItem(dep, True))
-
-        for dep in self.current_editable.required_external_lib:
-            item_list.append(DependencyItem(dep, False))
-
-
-        self.root_tree.add_item_list(item_list)
-        self.root_tree.set_selected_item_index(1)
-        self.master.move_focus(self.root_tree)
-
     def return_to_roots(self):
         self.master.move_focus(self.root_list)
         self.root_tree.clear()
         self.root_info.clear()
-
-    def avoid_select_root(self):
-        # Hack to avoid selecting the Root
-        if self.root_tree.get_selected_item_index() == 1:
-            self.root_tree.set_selected_item_index(2)
 
     def select_dependency(self):
         for d in self.root_tree.get_item_list():
@@ -257,6 +243,37 @@ class WorkspaceTUI:
 
         self.dep_info.add_item_list(item_list)
         self.master.move_focus(self.dep_info)
+
+    def return_root_tree(self):
+        self.master.move_focus(self.root_tree)
+        self.dep_repo_info.clear()
+        self.dep_info.clear()
+
+    def create_local_root_data(self, root):
+        self.current_editable = [e for e in self.editable_list if e.package is root.conan_ref.package][0]
+        self.root_info.add_item_list([
+            GitInfo(self.current_editable),
+            GithubInfo(self.current_editable),
+            WorkflowInfo(self.current_editable)])
+
+        item_list = [self.current_editable.package.name]
+
+        for dep in self.current_editable.required_local_lib:
+            item_list.append(DependencyItem(dep, True))
+
+        for dep in self.current_editable.required_external_lib:
+            item_list.append(DependencyItem(dep, False))
+
+
+        self.root_tree.add_item_list(item_list)
+        self.root_tree.set_selected_item_index(1)
+        self.root_tree.set_help_text('Enter to select dependency - C to commit')
+        self.master.move_focus(self.root_tree)
+
+    def avoid_select_root(self):
+        # Hack to avoid selecting the Root
+        if self.root_tree.get_selected_item_index() == 1:
+            self.root_tree.set_selected_item_index(2)
 
     def create_dep_item_list(self, dependency):
         if len(dependency.conan_ref.conflicts) == 0:
@@ -301,11 +318,6 @@ class WorkspaceTUI:
         self.dep_repo_info.clear()
         self.dep_repo_info.add_item_list(list)
 
-
-    def return_root_tree(self):
-        self.master.move_focus(self.root_tree)
-        self.dep_repo_info.clear()
-        self.dep_info.clear()
 
     def create_non_local_root_data(self, root):
         self.dep_info.add_item_list([f"No git repo for {root.conan_ref.conan_ref}"])
@@ -359,10 +371,6 @@ class WorkspaceTUI:
                 for ref_needed, value in editable_version_by_name[req.package.name].items():
                     if (e.package not in value) and (ref_needed is not req.conan_ref):
                         req.conflicts.update(value)
-
-    def back_to_ws(self):
-        self.root_list.clear()
-        self.master.move_focus(self.ws_menu)
                                             
 
 

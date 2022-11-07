@@ -13,7 +13,7 @@ class Conflict:
     def __str__(self):
         result = '  ' + self.ref.conan_ref
 
-        if self.waiting and self.ref.date is None:
+        if self.waiting and self.editable.gh_repo and self.ref.date is None:
             self.waiting = False
             exe = ThreadPoolExecutor(max_workers=1)
             exe.submit(self.fill_date_from_github)
@@ -23,7 +23,6 @@ class Conflict:
 
         return result
 
-    # FIX: this needs to wait for the gh_repo before being executed
     def fill_date_from_github(self):
             match = re.search(r"/([\w]{10})", self.ref.conan_ref)
 

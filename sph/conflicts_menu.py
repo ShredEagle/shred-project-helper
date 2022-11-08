@@ -1,7 +1,7 @@
 from py_cui import widgets
 import pdb
 
-from sph.conflict import Conflict
+from sph.choice import Choice
 
 class ConflictsMenu(widgets.ScrollMenu):
     def __init__(self, id, title, grid, row, column, row_span, column_span, padx, pady, logger):
@@ -18,7 +18,7 @@ class ConflictsMenu(widgets.ScrollMenu):
         find_index = -1
 
         while find_index == -1 and current_index > 0:
-            if isinstance(self._view_items[current_index], Conflict):
+            if isinstance(self._view_items[current_index], Choice):
                 find_index = current_index
             else:
                 current_index -= 1
@@ -33,7 +33,7 @@ class ConflictsMenu(widgets.ScrollMenu):
         find_index = -1
 
         while find_index == -1 and current_index < len(self.get_item_list()):
-            if isinstance(self._view_items[current_index], Conflict):
+            if isinstance(self._view_items[current_index], Choice):
                 find_index = current_index
             else:
                 current_index += 1

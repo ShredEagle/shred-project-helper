@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from typing_extensions import Any
 
 import click
@@ -37,6 +38,35 @@ class Workspace:
 
         for ref, path in self.data["editables"].items():
             self.local_refs.append((ConanRef(ref), self.folder_path / Path(path["path"])))
+
+    def change_version(self, new_dependency, old_dependency=None):
+        text = None
+        regex = r''
+        if old_dependency is None:
+            regex = r"{}\/[\w]+@[\w]+\/[\w]+(#[\w])?".format(re.escape(new_dependency.package.name))
+        else:
+            regex = re.escape(old_dependency)
+
+        with open(self.path, "r") as conanfile:
+            text = conanfile.read()
+            text = re.sub(regex, new_dependency.ref, text)
+        with open(self.path, "w") as resolvedfile:
+            resolvedfile.write(text)
+
+        ref_to_change = next(x for x, p in self.local_refs if x.package.name == new_dependency.package.name)
+        ref_to_change.version = new_dependency.version
+        ref_to_change.user = new_dependency.user
+        ref_to_change.channel = new_dependency.channel
+        ref_to_change.revision = new_dependency.revision
+        new_dependency.is_present_locally = ref_to_change.is_present_locally
+
+    def resolve_conflict(self, old_ref, new_dependency):
+        text = None
+        with open(self.path, "r") as workspace_file:
+            text = workspace_file.read()
+            text = re.sub(re.escape(old_ref.ref), new_dependency.ref, text)
+        with open(self.path, "w") as resolvedfile:
+            resolvedfile.write(text)
 
     def get_dependency_from_package(self, package):
        return next(filter(lambda x: x[0].package == package, self.local_refs))[0]

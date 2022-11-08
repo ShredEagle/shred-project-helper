@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 import os
+import queue
 import cursor
 from pathlib import Path
 
@@ -7,10 +9,11 @@ from github import BadCredentialsException, Github, GithubException, TwoFactorEx
 import py_cui
 
 from sph.config import configCreate, configSaveToken
-from sph.conflict import Conflict
+from sph.choice import Choice
+from sph.conan_ref import ConanRef
 from sph.conflicts_menu import ConflictsMenu
 from sph.workspace import Workspace
-from sph.editable import create_editable_from_workspace
+from sph.editable import create_editable_dependency, create_editable_from_workspace
 
 # |---------------------------------------------------------|
 # |Ws sel  | Root selection                                 |
@@ -62,25 +65,25 @@ class WorkspaceItem:
 
 class RootItem:
     def __init__(self, conan_ref, conan_path):
-        self.conan_ref = conan_ref
+        self.ref = conan_ref
         self.conan_path = conan_path
         self.is_selected = False
 
     def __str__(self):
-        return f"{'* ' if self.is_selected else '  '}{self.conan_ref.conan_ref} at ({self.conan_path.resolve().parents[0]}){' not present locally' if not self.conan_ref.is_local else ''}"
+        return f"{'* ' if self.is_selected else '  '}{self.ref.ref} at ({self.conan_path.resolve().parents[0]}){' not present locally' if not self.ref.is_present_locally else ''}"
 
 class DependencyItem:
     def __init__(self, conan_ref, local):
-        self.conan_ref = conan_ref
+        self.ref = conan_ref
         self.is_selected = False
-        self.is_local = local
+        self.is_present_locally = local
 
     def __str__(self):
         if self.is_selected:
-            return f"  S {self.conan_ref.package.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
-        if self.is_local:
-            return f"  L {self.conan_ref.package.name}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
-        return f"  X {self.conan_ref.conan_ref}{' has conflicts' if len(self.conan_ref.conflicts) > 0 else ''}"
+            return f"  S {self.ref.package.name}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
+        if self.is_present_locally:
+            return f"  L {self.ref.package.name}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
+        return f"  X {self.ref.ref}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
 
 class GitInfo:
     def __init__(self, editable):
@@ -104,8 +107,6 @@ class GithubInfo:
         else:
             return 'Waiting for github repo'
 
-        return ''
-
 class WorkflowInfo:
     def __init__(self, editable):
         self.editable = editable
@@ -128,7 +129,8 @@ class WorkflowInfo:
 
 class WorkspaceTUI:
 
-    def __init__(self, master, workspace_dir, gh_client):
+    def __init__(self, master, workspace_dir, gh_client, thread_pool):
+        self.thread_pool = thread_pool
         self.workflow_msg = ''
         self.gh_client = gh_client
         self.master = master
@@ -136,7 +138,6 @@ class WorkspaceTUI:
         self.workspace_selected_index = -1
 
         self.workspaces = [WorkspaceItem(Workspace(Path(workspace_dir) / Path(x))) for x in os.listdir(workspace_dir) if "yml" in x]
-        self.workspaces[0].is_hovered = True
 
         self.editable_list = []
 
@@ -170,18 +171,60 @@ class WorkspaceTUI:
         self.dep_repo_info.add_text_color_rule('', py_cui.RED_ON_BLACK, rule_type="contains")
         self.dep_repo_info.add_text_color_rule('', py_cui.GREEN_ON_BLACK, rule_type="contains")
 
-        self.dep_info = self.master.add_custom_widget(ConflictsMenu, f'Conflict resolution', 4, 6, row_span=12, column_span=10, padx=0, pady=0)
+        self.dep_info = self.master.add_custom_widget(ConflictsMenu, f'Conflict resolution', 4, 6, row_span=8, column_span=10, padx=0, pady=0)
         self.dep_info.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_root_tree)
         self.dep_info.add_text_color_rule('', py_cui.WHITE_ON_BLACK, selected_color=py_cui.CYAN_ON_BLACK, rule_type="contains")
+        self.dep_info.add_key_command(py_cui.keys.KEY_ENTER, self.resolve_conflict_with_selected_dep)
+
+        self.logger = self.master.add_scroll_menu(f'Resolution journal', 12, 6, row_span=4, column_span=10, padx=0, pady=0)
+        self.logger.set_selectable(False)
 
         self.master.move_focus(self.ws_menu)
 
+    def resolve_conflict_with_selected_dep(self):
+        selected_conflict = self.dep_info.get()
+        if selected_conflict.from_github:
+            for editable in self.editable_list:
+                editable.change_version(selected_conflict.ref)
+                create_editable_dependency(editable, self.editable_list)
+                self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in {editable.package.name}')
+                self.logger._scroll_down(self.logger.get_viewport_height())
+
+            self.workspace.change_version(selected_conflict.ref)
+            self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in workspace {self.workspace.path.resolve()}')
+            self.logger._scroll_down(self.logger.get_viewport_height())
+        else:
+            modified_conflict_list = [e for e in self.dep_info.get_item_list() if e is not selected_conflict and isinstance(e, Choice) and not e.from_github]
+
+            for conflict in modified_conflict_list:
+                conflict.resolve_conflict(selected_conflict.ref)
+                if not isinstance(conflict.conflicted_editable, Workspace):
+                    create_editable_dependency(conflict.conflicted_editable, self.editable_list)
+                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} from {conflict.ref.version} to {selected_conflict.ref.version} in {conflict.conflicted_editable.package.name}')
+                    self.logger._scroll_down(self.logger.get_viewport_height())
+                else:
+                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} from {conflict.ref.version} to {selected_conflict.ref.version} in workspace {conflict.conflicted_editable.path.resolve()}')
+                    self.logger._scroll_down(self.logger.get_viewport_height())
+
+        for ed in self.editable_list:
+            for dep in ed.required_local_lib:
+                dep.conflicts = set()
+
+            for dep in ed.required_external_lib:
+                dep.conflicts = set()
+
+        self.compute_conflicts(self.workspace)
+
+        self.return_root_tree()
+        self.select_dependency()
+
+
     def show_root_tree_help(self):
-        menu =self.master.show_menu_popup('Dependency tree help',
+        self.master.show_menu_popup('Dependency tree help',
                                     [
                                         'Enter     select dependency',
                                         'c         commit root repo'
-                                    ], lambda x: None)
+                                    ], lambda x: x)
 
     def select_workspace(self):
         self.root_list.clear()
@@ -193,9 +236,9 @@ class WorkspaceTUI:
         item.is_selected = True
 
         self.workspace = item.workspace
-        self.editable_list = create_editable_from_workspace(item.workspace, self.gh_client)
+        self.editable_list = create_editable_from_workspace(item.workspace, self.gh_client, self.thread_pool)
         self.compute_conflicts(item.workspace)
-        self.root_list.add_item_list([RootItem(ref, path) for (ref, path) in item.workspace.local_refs if ref.conan_ref in [x.conan_ref for x in item.workspace.root]])
+        self.root_list.add_item_list([RootItem(ref, path) for (ref, path) in item.workspace.local_refs if ref.ref in [x.ref for x in item.workspace.root]])
         self.master.move_focus(self.root_list)
 
     def return_to_ws(self):
@@ -205,7 +248,7 @@ class WorkspaceTUI:
     def select_root(self):
         item = self.root_list.get()
 
-        if item.conan_ref.is_local:
+        if item.ref.is_present_locally:
             item.is_selected = True
             self.create_local_root_data(item)
         else:
@@ -224,9 +267,9 @@ class WorkspaceTUI:
         dependency = self.root_tree.get()
         dependency.is_selected = True
 
-        self.dep_repo_info.set_title(f'{dependency.conan_ref.conan_ref} repo info')
+        self.dep_repo_info.set_title(f'{dependency.ref.ref} repo info')
 
-        self.dependency_editable = self.get_editable_from_ref(dependency.conan_ref)
+        self.dependency_editable = self.get_editable_from_ref(dependency.ref)
         if self.dependency_editable:
             repo_item_list = [
                     GitInfo(self.dependency_editable),
@@ -236,7 +279,7 @@ class WorkspaceTUI:
             self.dep_repo_info.add_item_list(repo_item_list)
 
 
-        self.dep_info.set_title(f'{dependency.conan_ref.conan_ref} info')
+        self.dep_info.set_title(f'{dependency.ref.ref} info')
 
         item_list = []
         item_list += self.create_dep_item_list(dependency)
@@ -247,10 +290,12 @@ class WorkspaceTUI:
     def return_root_tree(self):
         self.master.move_focus(self.root_tree)
         self.dep_repo_info.clear()
+        self.dep_repo_info.set_title('Dependency repo info')
         self.dep_info.clear()
+        self.dep_info.set_title('Conflict resolution')
 
     def create_local_root_data(self, root):
-        self.current_editable = [e for e in self.editable_list if e.package is root.conan_ref.package][0]
+        self.current_editable = [e for e in self.editable_list if e.package is root.ref.package][0]
         self.root_info.add_item_list([
             GitInfo(self.current_editable),
             GithubInfo(self.current_editable),
@@ -276,57 +321,49 @@ class WorkspaceTUI:
             self.root_tree.set_selected_item_index(2)
 
     def create_dep_item_list(self, dependency):
-        if len(dependency.conan_ref.conflicts) == 0:
-            return []
+        base_list = []
+        if len(dependency.ref.conflicts) != 0:
+            ref = self.current_editable.get_dependency_from_package(dependency.ref.package)
+            base_list += [
+                "Choose a version to resolve conflict (press enter to select)",
+                f'In {self.current_editable.package} at {self.current_editable.conan_path.resolve()}:',
+                Choice(ref, self.get_editable_from_ref(ref), self.current_editable, self.thread_pool)
+            ]
+            for conflict in dependency.ref.conflicts:
+                if isinstance(conflict, Workspace):
+                    ref = conflict.get_dependency_from_package(dependency.ref.package)
+                    base_list += [
+                            f'In {conflict.path.name}:',
+                            Choice(ref, self.get_editable_from_ref(ref), conflict, self.thread_pool)
+                    ]
+                else:
+                    editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_package(conflict))
+                    ref = editable.get_dependency_from_package(dependency.ref.package)
+                    base_list += [
+                        f'In {editable.package} at {editable.conan_path.resolve()}:',
+                        Choice(ref, self.get_editable_from_ref(ref), editable, self.thread_pool)
+                    ]
 
-        ref = self.current_editable.get_dependency_from_package(dependency.conan_ref.package)
-        base_list = [
-            "Choose a version to resolve conflict (press enter to select)",
-            f'In {self.current_editable.package} at {self.current_editable.conan_path.resolve()}:',
-            Conflict(ref, self.get_editable_from_ref(ref))
-        ]
-        for conflict in dependency.conan_ref.conflicts:
-            if isinstance(conflict, Workspace):
-                ref = conflict.get_dependency_from_package(dependency.conan_ref.package)
-                base_list += [
-                        f'In {conflict.path.name}:',
-                        Conflict(ref, self.get_editable_from_ref(ref))
-                ]
-            else:
-                editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_package(conflict))
-                ref = editable.get_dependency_from_package(dependency.conan_ref.package)
-                base_list += [
-                    f'In {editable.package} at {editable.conan_path.resolve()}:',
-                    Conflict(ref, self.get_editable_from_ref(ref))
-                ]
+        if dependency.is_present_locally:
+            base_list += ['']
+            base_list += ['Deployed recipe on conan']
+            editable = self.get_editable_from_ref(dependency.ref)
+            for run in editable.runs_develop[0:10]:
+                if run.status == 'completed' and run.conclusion == 'success':
+                    new_ref = ConanRef(f'{dependency.ref.package.name}/{run.head_sha[0:10]}@{dependency.ref.user}/{dependency.ref.channel}')
+                    new_ref.date = run.created_at
+                    base_list += [Choice(new_ref, self.get_editable_from_ref(new_ref), editable, self.thread_pool, from_github=True)]
 
         return base_list 
 
-    def display_editable_info(self, f):
-        list = self.dep_repo_info.get_item_list()
-
-        for i, m in enumerate(list):
-            if m == self.editable_github_info:
-                if f.result() == True:
-                    list[i] = ' Github is ready'
-                    self.workflow_msg = 'Waiting for CI status'
-                    list.append(self.workflow_msg)
-                    self.dependency_editable.check_workflow(self.set_workflow_status(self.dep_repo_info))
-                if f.result() == False:
-                    list[i] = ' Github is not ready'
-                
-        self.dep_repo_info.clear()
-        self.dep_repo_info.add_item_list(list)
-
-
     def create_non_local_root_data(self, root):
-        self.dep_info.add_item_list([f"No git repo for {root.conan_ref.conan_ref}"])
+        self.dep_info.add_item_list([f"No git repo for {root.ref.ref}"])
 
     def get_editable_from_ref(self, conan_ref):
-        filtered_editable = [e for e in self.editable_list if e.package == conan_ref.package]
-
-        if len(filtered_editable) == 1:
-            return filtered_editable[0]
+        try:
+            return next(e for e in self.editable_list if e.package == conan_ref.package)
+        except StopIteration:
+            return None
 
     def compute_conflicts(self, workspace):
         editable_version_by_name = dict()
@@ -335,10 +372,10 @@ class WorkspaceTUI:
             if ref.package.name not in editable_version_by_name:
                 editable_version_by_name[ref.package.name] = dict()
 
-            if ref.conan_ref not in editable_version_by_name[ref.package.name]:
-                editable_version_by_name[ref.package.name][ref.conan_ref] = set()
+            if ref.ref not in editable_version_by_name[ref.package.name]:
+                editable_version_by_name[ref.package.name][ref.ref] = set()
 
-            editable_version_by_name[ref.package.name][ref.conan_ref].add(workspace)
+            editable_version_by_name[ref.package.name][ref.ref].add(workspace)
 
 
 
@@ -347,37 +384,38 @@ class WorkspaceTUI:
                 if ref.package.name not in editable_version_by_name:
                     editable_version_by_name[ref.package.name] = dict()
 
-                if ref.conan_ref not in editable_version_by_name[ref.package.name]:
-                    editable_version_by_name[ref.package.name][ref.conan_ref] = set()
+                if ref.ref not in editable_version_by_name[ref.package.name]:
+                    editable_version_by_name[ref.package.name][ref.ref] = set()
 
-                editable_version_by_name[ref.package.name][ref.conan_ref].add(e.package)
+                editable_version_by_name[ref.package.name][ref.ref].add(e.package)
 
             for ref in e.required_external_lib:
                 if ref.package.name not in editable_version_by_name:
                     editable_version_by_name[ref.package.name] = dict()
 
-                if ref.conan_ref not in editable_version_by_name[ref.package.name]:
-                    editable_version_by_name[ref.package.name][ref.conan_ref] = set()
+                if ref.ref not in editable_version_by_name[ref.package.name]:
+                    editable_version_by_name[ref.package.name][ref.ref] = set()
 
-                editable_version_by_name[ref.package.name][ref.conan_ref].add(e.package)
+                editable_version_by_name[ref.package.name][ref.ref].add(e.package)
 
         for e in self.editable_list:
             for req in e.required_local_lib:
                 for ref_needed, value in editable_version_by_name[req.package.name].items():
-                    if (e.package not in value) and (ref_needed is not req.conan_ref):
+                    if (e.package not in value) and (ref_needed is not req.ref):
                         req.conflicts.update(value)
 
             for req in e.required_external_lib:
                 for ref_needed, value in editable_version_by_name[req.package.name].items():
-                    if (e.package not in value) and (ref_needed is not req.conan_ref):
+                    if (e.package not in value) and (ref_needed is not req.ref):
                         req.conflicts.update(value)
-                                            
 
 
 @click.command()
 @click.option("--github-token", "-gt")
 @click.argument("workspace_dir")
 def tui(github_token, workspace_dir):
+    cursor.hide()
+    thread_pool = ThreadPoolExecutor(max_workers=4)
     github_client = None;
 
     config, config_path = configCreate()
@@ -394,8 +432,6 @@ def tui(github_token, workspace_dir):
             github_client = Github(github_username, github_password)
         else:
             github_client = Github(github_token)
-
-        user = github_client.get_user()
     except BadCredentialsException as e:
         click.echo('Wrong github credentials')
         click.echo(e)
@@ -416,7 +452,12 @@ def tui(github_token, workspace_dir):
     root.set_title('Conan workspace manager')
     root.set_refresh_timeout(1)
 
-    WorkspaceTUI(root, workspace_dir, github_client)
+    WorkspaceTUI(root, workspace_dir, github_client, thread_pool)
 
-    root.start()
-    cursor.hide()
+    try:
+        root.start()
+        cursor.show()
+        thread_pool.shutdown(wait=False, cancel_futures=True)
+    except Exception as e:
+        breakpoint()
+        cursor.show()

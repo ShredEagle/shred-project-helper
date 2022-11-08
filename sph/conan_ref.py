@@ -4,7 +4,7 @@ from sph.utils import extract_info_from_conan_ref, t
 
 class ConanRef:
     @property
-    def conan_ref(self):
+    def ref(self):
         ref = f'{self.package.name}/{self.version}'
 
         if self.user:
@@ -27,12 +27,13 @@ class ConanRef:
         self.conflicts = set() 
         self.editable =None
         self.date = None
+        self.is_present_locally = False
 
     def __eq__(self, other):
-        return self.conan_ref == other.conan_ref
+        return hasattr(other, 'ref') and self.ref == other.ref
 
     def __str__(self):
-        return f'{self.conan_ref}'
+        return f'{self.ref}'
     
     def __hash__(self):
-        return self.conan_ref.__hash__()
+        return self.ref.__hash__()

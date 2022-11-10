@@ -185,14 +185,16 @@ class WorkspaceTUI:
         selected_conflict = self.dep_info.get()
         if selected_conflict.from_github:
             for editable in self.editable_list:
-                editable.change_version(selected_conflict.ref)
-                create_editable_dependency(editable, self.editable_list)
-                self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in {editable.package.name}')
-                self.logger._scroll_down(self.logger.get_viewport_height())
+                version_changed = editable.change_version(selected_conflict.ref)
+                if version_changed:
+                    create_editable_dependency(editable, self.editable_list)
+                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in {editable.package.name}')
+                    self.logger._scroll_down(self.logger.get_viewport_height())
 
-            self.workspace.change_version(selected_conflict.ref)
-            self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in workspace {self.workspace.path.resolve()}')
-            self.logger._scroll_down(self.logger.get_viewport_height())
+            version_changed = self.workspace.change_version(selected_conflict.ref)
+            if version_changed:
+                self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in workspace {self.workspace.path.resolve()}')
+                self.logger._scroll_down(self.logger.get_viewport_height())
         else:
             modified_conflict_list = [e for e in self.dep_info.get_item_list() if e is not selected_conflict and isinstance(e, Choice) and not e.from_github]
 

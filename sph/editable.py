@@ -74,6 +74,7 @@ class Editable:
 
     def change_version(self, new_dependency, old_dependency=None):
         text = None
+        newtext = None
         regex = r''
         if old_dependency is None:
             regex = r"{}\/[\w]+@[\w]+\/[\w]+(#[\w])?".format(re.escape(new_dependency.package.name))
@@ -82,24 +83,28 @@ class Editable:
 
         with open(self.conan_path, "r") as conanfile:
             text = conanfile.read()
-            text = re.sub(regex, new_dependency.ref, text)
+            newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.conan_path, "w") as resolvedfile:
             resolvedfile.write(text)
 
-        for dep in self.required_local_lib:
-            if dep.package.name == new_dependency.package.name:
-                dep.version = new_dependency.version
-                dep.user = new_dependency.user
-                dep.channel = new_dependency.channel
-                dep.revision = new_dependency.revision
+        if newtext != text:
+            for dep in self.required_local_lib:
+                if dep.package.name == new_dependency.package.name:
+                    dep.version = new_dependency.version
+                    dep.user = new_dependency.user
+                    dep.channel = new_dependency.channel
+                    dep.revision = new_dependency.revision
 
-        for dep in self.required_external_lib:
-            if dep.package.name == new_dependency.package.name:
-                dep.version = new_dependency.version
-                dep.user = new_dependency.user
-                dep.channel = new_dependency.channel
-                dep.revision = new_dependency.revision
+            for dep in self.required_external_lib:
+                if dep.package.name == new_dependency.package.name:
+                    dep.version = new_dependency.version
+                    dep.user = new_dependency.user
+                    dep.channel = new_dependency.channel
+                    dep.revision = new_dependency.revision
 
+            return True
+
+        return False
 
     def setup_gh_repo_task(self):
         if self.gh_repo:

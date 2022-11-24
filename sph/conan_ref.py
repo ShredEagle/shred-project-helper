@@ -28,7 +28,7 @@ class ConanRef:
         self.user = user
         self.channel = channel
         self.revision = revision
-        self.conflicts = set() 
+        self.conflicts = dict()
         self.editable =None
         self.date = None
         self.is_present_locally = False
@@ -42,23 +42,21 @@ class ConanRef:
     def __hash__(self):
         return self.ref.__hash__()
 
-    def print_check(self, level=0):
-        if len(self.conflicts) > 0:
+    def print_check(self, workspace_path, level=0):
+        if len(self.conflicts[workspace_path]) > 0:
             ret = f"{t(level)}{self.ref} conflicts with "
-            for c in self.conflicts:
+            for c in self.conflicts[workspace_path]:
                 ret += f"{Fore.RED}{c}{Fore.RESET} "
             Halo(ret).fail()
         else:
             ret = f"{t(level)}{self.ref} is ok"
             Halo(ret).succeed()
 
-    def print_check_tui(self, level=0):
-        if len(self.conflicts) > 0:
-            start_same_line()
+    def print_check_tui(self, workspace_path):
+        if workspace_path in self.conflicts and len(self.conflicts[workspace_path]) > 0:
             conflicts = ""
-            for c in self.conflicts:
+            for c in self.conflicts[workspace_path]:
                 conflicts += f"{c} "
             text_item([(" ", "fail"), f"{self.ref} conflicts with ", (conflicts, "fail")])
-            end_same_line()
         else:
             text_item([(" ", "success"), f"{self.ref} is ok"])

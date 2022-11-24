@@ -1,14 +1,14 @@
 import time
 
 import click
-from colorama import Fore, Style
+from colorama import Fore
 from halo import Halo
 from github import (BadCredentialsException, Github, GithubException,
                     TwoFactorException)
 
 from sph.workspace import Workspace
 from sph.config import configCreate, configSaveToken
-from sph.editable import create_editable_from_workspace
+from sph.editable import create_editable_from_workspace_list
 
 
 @click.command()
@@ -53,60 +53,72 @@ def check(github_token, workspace):
 
     # Get dependency tree
     workspace_data = Workspace(workspace)
-    editables = create_editable_from_workspace(workspace_data, github_client)
+    waiting = Halo("Waiting for github")
+    waiting.start()
+    editables = create_editable_from_workspace_list([workspace_data], github_client)
+    waiting.succeed()
 
     click.echo()
 
     editable_version_by_name = dict()
 
-    for ref, path in workspace_data.editables:
-        if ref.name not in editable_version_by_name:
-            editable_version_by_name[ref.name] = dict()
+    for ref, path in workspace_data.local_refs:
+        if ref.package.name not in editable_version_by_name:
+            editable_version_by_name[ref.package.name] = dict()
 
-        if ref.conan_ref not in editable_version_by_name[ref.name]:
-            editable_version_by_name[ref.name][ref.conan_ref] = set()
+        if ref.ref not in editable_version_by_name[ref.package.name]:
+            editable_version_by_name[ref.package.name][ref.ref] = set()
 
-        editable_version_by_name[ref.name][ref.conan_ref].add("workspace")
+        editable_version_by_name[ref.package.name][ref.ref].add("workspace")
 
 
 
     for e in editables:
         for ref in e.required_local_lib:
-            if ref.name not in editable_version_by_name:
-                editable_version_by_name[ref.name] = dict()
+            if ref.package.name not in editable_version_by_name:
+                editable_version_by_name[ref.package.name] = dict()
 
-            if ref.conan_ref not in editable_version_by_name[ref.name]:
-                editable_version_by_name[ref.name][ref.conan_ref] = set()
+            if ref.ref not in editable_version_by_name[ref.package.name]:
+                editable_version_by_name[ref.package.name][ref.ref] = set()
 
-            editable_version_by_name[ref.name][ref.conan_ref].add(e.ref.conan_ref)
+            editable_version_by_name[ref.package.name][ref.ref].add(e.package)
 
         for ref in e.required_external_lib:
-            if ref.name not in editable_version_by_name:
-                editable_version_by_name[ref.name] = dict()
+            if ref.package.name not in editable_version_by_name:
+                editable_version_by_name[ref.package.name] = dict()
 
-            if ref.conan_ref not in editable_version_by_name[ref.name]:
-                editable_version_by_name[ref.name][ref.conan_ref] = set()
+            if ref.ref not in editable_version_by_name[ref.package.name]:
+                editable_version_by_name[ref.package.name][ref.ref] = set()
 
-            editable_version_by_name[ref.name][ref.conan_ref].add(e.ref.conan_ref)
+            editable_version_by_name[ref.package.name][ref.ref].add(e.package)
 
     for e in editables:
         for req in e.required_local_lib:
-            for ref_needed, value in editable_version_by_name[req.name].items():
-                if (e.ref.conan_ref not in value) and (ref_needed is not req.conan_ref):
-                    req.conflicts.append(value)
+            for ref_needed, value in editable_version_by_name[req.package.name].items():
+                if (e.package not in value) and (ref_needed is not req.ref):
+                    req.conflicts.update(value)
 
         for req in e.required_external_lib:
-            for ref_needed, value in editable_version_by_name[req.name].items():
-                if (e.ref.conan_ref not in value) and (ref_needed is not req.conan_ref):
-                    req.conflicts.append(value)
+            for ref_needed, value in editable_version_by_name[req.package.name].items():
+                if (e.package not in value) and (ref_needed is not req.ref):
+                    req.conflicts.update(value)
 
     for e in editables:
-        click.echo(f"{Fore.CYAN}{e.ref.conan_ref}{Fore.RESET} at {Fore.YELLOW}{e.conan_path.parents[1]}{Fore.RESET}")
+        click.echo(f"{Fore.CYAN}{e.package.name}{Fore.RESET} at {Fore.YELLOW}{e.conan_path.parents[1]}{Fore.RESET}")
         if e.repo.is_dirty():
             Halo("Repo is dirty").fail()
         else:
             Halo("Repo is clean").succeed()
-            checking_workflow(e)
+            ci_status = Halo("Waiting for CI")
+            ci_status.start()
+            e.checking_workflow_task()
+            if e.current_run.status == "completed":
+                if e.current_run.conclusion == "success":
+                    ci_status.succeed("CI success")
+                else:
+                    ci_status.fail("CI failure")
+            if e.current_run.status == "in_progress":
+                pass
         if len(e.required_local_lib) + len(e.required_external_lib) == 0:
             Halo("No dependency").succeed()
         for req in e.required_local_lib:

@@ -1,6 +1,10 @@
+from halo import Halo
+from colorama import Fore
+
 from typing_extensions import Any
 from sph.conan_package import ConanPackage
 from sph.utils import extract_info_from_conan_ref, t
+from witch.widgets import start_same_line, end_same_line, text_item
 
 class ConanRef:
     @property
@@ -37,3 +41,24 @@ class ConanRef:
     
     def __hash__(self):
         return self.ref.__hash__()
+
+    def print_check(self, level=0):
+        if len(self.conflicts) > 0:
+            ret = f"{t(level)}{self.ref} conflicts with "
+            for c in self.conflicts:
+                ret += f"{Fore.RED}{c}{Fore.RESET} "
+            Halo(ret).fail()
+        else:
+            ret = f"{t(level)}{self.ref} is ok"
+            Halo(ret).succeed()
+
+    def print_check_tui(self, level=0):
+        if len(self.conflicts) > 0:
+            start_same_line()
+            conflicts = ""
+            for c in self.conflicts:
+                conflicts += f"{c} "
+            text_item([(" ", "fail"), f"{self.ref} conflicts with ", (conflicts, "fail")])
+            end_same_line()
+        else:
+            text_item([(" ", "success"), f"{self.ref} is ok"])

@@ -1,7 +1,5 @@
 import ast
 import re
-from concurrent.futures import ThreadPoolExecutor
-
 from git.repo import Repo
 
 from sph.conan_ref import ConanRef
@@ -33,10 +31,14 @@ def create_editable_dependency(editable, editables):
                     )
 
 
-def create_editable_from_workspace(workspace, github_client=None, thread_pool=None):
+def create_editable_from_workspace_list(workspaces, github_client=None, thread_pool=None):
     editable_list = []
 
-    for conan_ref, project_conan_path in workspace.local_refs:
+    local_refs = set()
+    for ws in workspaces:
+        local_refs.update(ws.local_refs)
+
+    for conan_ref, project_conan_path in local_refs:
         if project_conan_path.exists():
             conan_ref.is_present_locally = True
             editable_list.append(Editable(conan_ref.package, project_conan_path, github_client, thread_pool))
@@ -52,15 +54,19 @@ class Editable:
     def __init__(self, conan_package, conan_path, gh_client, thread_pool):
         self.thread_pool = thread_pool
         self.package = conan_package
-        self.conan_path = conan_path / "conanfile.py" if "conanfile.py" not in str(conan_path) else conan_path
-        self.repo = Repo(self.conan_path.parents[1].resolve())
-        self.required_external_lib = []
-        self.required_local_lib = []
+        self.conan_path = (conan_path / "conanfile.py" if "conanfile.py" not in str(conan_path) else conan_path).resolve()
+        self.is_local = self.conan_path.exists()
+        if self.is_local:
+            # FIX: This assume the position of the git repository
+            self.repo = Repo(self.conan_path.parents[1].resolve())
+            self.required_external_lib = []
+            self.required_local_lib = []
+
         self.gh_repo_name = None
         self.gh_repo = None
-        self.future = None
         self.current_run = None
         self.runs_develop = []
+        self.checking_for_workflow = False
 
         remote_url = list(self.repo.remote("origin").urls)[0]
         match = re.search(r"github.com:(.*)/(.*(?=\.g)|.*)", remote_url)
@@ -118,9 +124,11 @@ class Editable:
             return False
         
     def setup_gh_repo(self):
-        if self.gh_repo_name:
+        if self.gh_repo_name and self.thread_pool:
             f = self.thread_pool.submit(self.setup_gh_repo_task)
-            f.add_done_callback(self.check_workflow)
+            f.add_done_callback(self.check_workflow_cb)
+        else:
+            self.setup_gh_repo_task()
     
     def get_dependency_from_package(self, package):
        return next(filter(lambda x: x.package == package, self.required_external_lib + self.required_local_lib))
@@ -128,6 +136,9 @@ class Editable:
     def checking_workflow_task(self, force=False):
         if self.current_run and not force:
             return self.current_run
+
+        self.checking_for_workflow = True
+        self.current_run = None
 
         try:
             runs_queued = self.gh_repo.get_workflow_runs(
@@ -153,14 +164,22 @@ class Editable:
                     if run.head_sha == self.repo.head.commit.hexsha:
                         self.current_run = run
 
-            if self.current_run:
-                return self.current_run
-            else:
+            self.checking_for_workflow = False
+
+            if self.current_run is None:
                 self.current_run = False
         except Exception:
+            self.checking_for_workflow = False
             self.current_run = False
 
-    def check_workflow(self, f):
-        if self.gh_repo:
-            exe = ThreadPoolExecutor(max_workers=1)
-            exe.submit(self.checking_workflow_task)
+    def check_workflow_wrapper(self, force=False):
+        def wrapped():
+            self.checking_workflow_task(force)
+        return wrapped
+
+    def check_workflow_cb(self, f):
+        self.check_workflow(False)
+
+    def check_workflow(self, force):
+        if self.gh_repo and not self.checking_for_workflow:
+            self.thread_pool.submit(self.check_workflow_wrapper(force))

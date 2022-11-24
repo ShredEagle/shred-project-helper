@@ -13,7 +13,7 @@ from sph.choice import Choice
 from sph.conan_ref import ConanRef
 from sph.conflicts_menu import ConflictsMenu
 from sph.workspace import Workspace
-from sph.editable import create_editable_dependency, create_editable_from_workspace
+from sph.editable import create_editable_dependency, create_editable_from_workspace_list
 
 # |---------------------------------------------------------|
 # |Ws sel  | Root selection                                 |
@@ -273,6 +273,7 @@ class WorkspaceTUI:
 
         self.dependency_editable = self.get_editable_from_ref(dependency.ref)
         if self.dependency_editable:
+            self.dependency_editable.check_workflow(True)
             repo_item_list = [
                     GitInfo(self.dependency_editable),
                     GithubInfo(self.dependency_editable),
@@ -361,55 +362,6 @@ class WorkspaceTUI:
     def create_non_local_root_data(self, root):
         self.dep_info.add_item_list([f"No git repo for {root.ref.ref}"])
 
-    def get_editable_from_ref(self, conan_ref):
-        try:
-            return next(e for e in self.editable_list if e.package == conan_ref.package)
-        except StopIteration:
-            return None
-
-    def compute_conflicts(self, workspace):
-        editable_version_by_name = dict()
-
-        for ref, _ in workspace.local_refs:
-            if ref.package.name not in editable_version_by_name:
-                editable_version_by_name[ref.package.name] = dict()
-
-            if ref.ref not in editable_version_by_name[ref.package.name]:
-                editable_version_by_name[ref.package.name][ref.ref] = set()
-
-            editable_version_by_name[ref.package.name][ref.ref].add(workspace)
-
-
-
-        for e in self.editable_list:
-            for ref in e.required_local_lib:
-                if ref.package.name not in editable_version_by_name:
-                    editable_version_by_name[ref.package.name] = dict()
-
-                if ref.ref not in editable_version_by_name[ref.package.name]:
-                    editable_version_by_name[ref.package.name][ref.ref] = set()
-
-                editable_version_by_name[ref.package.name][ref.ref].add(e.package)
-
-            for ref in e.required_external_lib:
-                if ref.package.name not in editable_version_by_name:
-                    editable_version_by_name[ref.package.name] = dict()
-
-                if ref.ref not in editable_version_by_name[ref.package.name]:
-                    editable_version_by_name[ref.package.name][ref.ref] = set()
-
-                editable_version_by_name[ref.package.name][ref.ref].add(e.package)
-
-        for e in self.editable_list:
-            for req in e.required_local_lib:
-                for ref_needed, value in editable_version_by_name[req.package.name].items():
-                    if (e.package not in value) and (ref_needed is not req.ref):
-                        req.conflicts.update(value)
-
-            for req in e.required_external_lib:
-                for ref_needed, value in editable_version_by_name[req.package.name].items():
-                    if (e.package not in value) and (ref_needed is not req.ref):
-                        req.conflicts.update(value)
 
 
 @click.command()
@@ -417,7 +369,7 @@ class WorkspaceTUI:
 @click.argument("workspace_dir")
 def tui(github_token, workspace_dir):
     cursor.hide()
-    thread_pool = ThreadPoolExecutor(max_workers=4)
+    thread_pool = ThreadPoolExecutor(max_workers=20)
     github_client = None;
 
     config, config_path = configCreate()
@@ -461,5 +413,4 @@ def tui(github_token, workspace_dir):
         cursor.show()
         thread_pool.shutdown(wait=False, cancel_futures=True)
     except Exception as e:
-        breakpoint()
         cursor.show()

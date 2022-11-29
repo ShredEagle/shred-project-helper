@@ -11,7 +11,6 @@ from sph.config import configCreate, configSaveToken
 from sph.conflict import compute_conflicts
 from sph.editable import Editable, create_editable_from_workspace_list
 from witch import witch_init, start_frame, end_frame, start_layout, end_layout
-from witch.layout import HORIZONTAL
 from witch.layout import HORIZONTAL, VERTICAL
 from witch.utils import Percentage
 from witch.widgets import start_panel, end_panel, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
@@ -137,16 +136,31 @@ class Runner:
                     ref = selected_editable.get_dependency_from_package(selected_ref.package)
                     ref.fill_date_from_github(self.get_editable_from_ref(ref), self.thread_pool)
 
-                    start_panel(f"{selected_ref.ref} conflict resolution", Percentage(80), Percentage(100), start_selected=True)
-                    text_item("Choose a version to resolve the conflict (press enter to select)")
-                    text_item(f"In {selected_editable.package} at {selected_editable.conan_path}")
-                    text_item(f"{ref} - {ref.date}")
+                    start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
+                    start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
+                    text_item("Choose a version to resolve the conflict (press enter to select)", selectable=False)
+                    text_item(f"In {selected_editable.package} at {selected_editable.conan_path}", selectable=False)
+                    text_item(f"  {ref} - {ref.date}")
                     for conflict in selected_ref.conflicts[ws.path]:
-                        text_item(f"In {conflict.path.name}")
+                        if isinstance(conflict, Workspace):
+                            text_item(f"In {conflict.path.name}", selectable=False)
+                            conflict_ref = conflict.get_dependency_from_package(selected_ref.package)
+                            text_item(f"  {conflict_ref} - {conflict_ref.date}")
+                            conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+                        else:
+                            conflict_editable = self.get_editable_from_ref(selected_editable.get_dependency_from_package(conflict))
+                            if conflict_editable:
+                                conflict_ref = conflict_editable.get_dependency_from_package(selected_ref.package)
+                                text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
+                                text_item(f"  {conflict_ref} - {conflict_ref.date}")
+                                conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
                     end_panel()
                     if is_key_pressed(chr(27)):
                         self.selected_ref = None
                         set_selected_id(workspace_id)
+                    start_panel("Workspace log", Percentage(100), Percentage(19))
+                    end_panel()
+                    end_layout()
             else:
                 start_panel(f"Root check", Percentage(80), Percentage(100))
                 end_panel()

@@ -1,10 +1,12 @@
+import re
+from github import GithubException
+
 from halo import Halo
 from colorama import Fore
 
-from typing_extensions import Any
 from sph.conan_package import ConanPackage
 from sph.utils import extract_info_from_conan_ref, t
-from witch.widgets import start_same_line, end_same_line, text_item
+from witch.widgets import text_item
 
 class ConanRef:
     @property
@@ -19,7 +21,7 @@ class ConanRef:
 
         return ref
 
-    def __init__(self, ref):
+    def __init__(self, ref, thread_pool=None):
         name, version, user, channel, revision = extract_info_from_conan_ref(
                 ref
             )
@@ -41,6 +43,24 @@ class ConanRef:
     
     def __hash__(self):
         return self.ref.__hash__()
+
+    def fill_date_from_github(self, editable, thread_pool):
+        if self.date is None:
+            self.date = "Waiting for date"
+            thread_pool.submit(self.fill_date_from_github_task(editable))
+
+    def fill_date_from_github_task(self, editable):
+        def task():
+            match = re.search(r"/([\w]{10})", self.ref)
+
+            if match:
+                if editable.gh_repo is not None and editable.gh_repo is not False:
+                    try:
+                        commit = editable.gh_repo.get_commit(match.group(1)).commit
+                        self.date = commit.author.date.strftime("%Y/%m/%d %H:%M:%S")
+                    except GithubException:
+                        self.date = f"No commit found for SHA {match.group(1)}"
+        return task
 
     def print_check(self, workspace_path, level=0):
         if len(self.conflicts[workspace_path]) > 0:

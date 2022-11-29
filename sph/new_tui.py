@@ -133,16 +133,18 @@ class Runner:
                 selected_ref, selected_editable, ws = self.selected_ref_with_editable
                 if selected_editable:
                     ref = selected_editable.get_dependency_from_package(selected_ref.package)
+                    ref.fill_date_from_github(self.get_editable_from_ref(ref), self.thread_pool)
 
-                start_panel(f"{selected_ref.ref} conflict resolution", Percentage(80), Percentage(100), start_selected=True)
-                text_item("Choose a version to resolve the conflict (press enter to select)")
-                text_item(f"In {selected_editable.package} at {selected_editable.conan_path}")
-                for conflict in selected_ref.conflicts[ws.path]:
-                    text_item(f"{conflict}")
-                end_panel()
-                if is_key_pressed(chr(27)):
-                    self.selected_ref = None
-                    set_selected_id(workspace_id)
+                    start_panel(f"{selected_ref.ref} conflict resolution", Percentage(80), Percentage(100), start_selected=True)
+                    text_item("Choose a version to resolve the conflict (press enter to select)")
+                    text_item(f"In {selected_editable.package} at {selected_editable.conan_path}")
+                    text_item(f"{ref} - {ref.date}")
+                    for conflict in selected_ref.conflicts[ws.path]:
+                        text_item(f"In {conflict.path.name}")
+                    end_panel()
+                    if is_key_pressed(chr(27)):
+                        self.selected_ref = None
+                        set_selected_id(workspace_id)
             else:
                 start_panel(f"Root check", Percentage(80), Percentage(100))
                 end_panel()

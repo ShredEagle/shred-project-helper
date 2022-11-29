@@ -33,7 +33,6 @@ class ConanRef:
         self.conflicts = dict()
         self.editable =None
         self.date = None
-        self.is_present_locally = False
 
     def __eq__(self, other):
         return hasattr(other, 'ref') and self.ref == other.ref

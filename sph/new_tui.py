@@ -12,6 +12,7 @@ from sph.conflict import compute_conflicts
 from sph.editable import Editable, create_editable_from_workspace_list
 from witch import witch_init, start_frame, end_frame, start_layout, end_layout
 from witch.layout import HORIZONTAL
+from witch.layout import HORIZONTAL, VERTICAL
 from witch.utils import Percentage
 from witch.widgets import start_panel, end_panel, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
 from witch.state import add_text_color, selected_id, input_buffer, is_key_pressed, set_selected_id
@@ -81,22 +82,23 @@ class Runner:
 
                         if ref in self.root_opened:
                             root_editable = self.get_editable_from_ref(ref)
-                            for ref in root_editable.required_local_lib:
-                                conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
-                                symbol = " " if not conflict else ""
-                                _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "path"))
+                            if root_editable:
+                                for ref in root_editable.required_local_lib:
+                                    conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
+                                    symbol = " " if not conflict else ""
+                                    _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "path"))
 
-                                if pressed:
-                                    self.selected_ref_with_editable = (ref, root_editable, ws)
-                                    self.hovered_root = None
-                            for ref in root_editable.required_external_lib:
-                                conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
-                                symbol = " " if not conflict else ""
-                                _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "refname"))
+                                    if pressed:
+                                        self.selected_ref_with_editable = (ref, root_editable, ws)
+                                        self.hovered_root = None
+                                for ref in root_editable.required_external_lib:
+                                    conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
+                                    symbol = " " if not conflict else ""
+                                    _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "refname"))
 
-                                if pressed:
-                                    self.selected_ref_with_editable = (ref, root_editable, ws)
-                                    self.hovered_root = None
+                                    if pressed:
+                                        self.selected_ref_with_editable = (ref, root_editable, ws)
+                                        self.hovered_root = None
             end_panel()
 
             if self.hovered_root:

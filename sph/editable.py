@@ -165,6 +165,11 @@ class Editable:
                     if run.head_sha == self.repo.head.commit.hexsha:
                         self.current_run = run
 
+            for run in self.runs_develop[0:10]:
+                lazy_container = run.status
+                lazy_container = run.conclusion
+                lazy_container = run.head_sha
+
             self.checking_for_workflow = False
 
             if self.current_run is None:

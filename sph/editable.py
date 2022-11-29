@@ -92,7 +92,7 @@ class Editable:
         newtext = None
         regex = r''
         if old_dependency is None:
-            regex = r"{}\/[\w]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
+            regex = r"{}\/[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
         else:
             regex = re.escape(old_dependency)
 

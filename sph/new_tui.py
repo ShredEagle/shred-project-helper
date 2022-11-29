@@ -21,6 +21,8 @@ from witch.state import add_text_color, selected_id, input_buffer, is_key_presse
 
 from sph.workspace import Workspace
 
+KEY_ESCAPE = chr(27)
+
 class Runner:
 
     def __init__(self, workspace_dir, gh_client, thread_pool):
@@ -169,7 +171,7 @@ class Runner:
                                 text_item(f"  {conflict_ref} - {conflict_ref.date}")
                                 conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
                     end_panel()
-                    if is_key_pressed(chr(27)):
+                    if is_key_pressed(KEY_ESCAPE):
                         self.selected_ref = None
                         set_selected_id(workspace_id)
                     start_panel("Workspace log", Percentage(100), Percentage(19))
@@ -196,7 +198,7 @@ class Runner:
                 end_same_line()
                 end_floating_panel()
                 set_selected_id(id)
-                if is_key_pressed("q"):
+                if is_key_pressed("q") or is_key_pressed(KEY_ESCAPE):
                     set_selected_id(old_id)
                     show_help = False
             elif is_key_pressed("q"):

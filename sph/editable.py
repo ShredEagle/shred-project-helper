@@ -4,6 +4,12 @@ from git.repo import Repo
 
 from sph.conan_ref import ConanRef
 
+class GithubRunStub:
+    def __init__(self, status, conclusion, head_sha):
+        self.status = status
+        self.conclusion = conclusion
+        self.head_sha = head_sha
+
 def create_editable_dependency(editable, editables):
     all_required_lib = []
     with open(editable.conan_path, "r") as conanfile:
@@ -151,7 +157,7 @@ class Editable:
             runs_completed = self.gh_repo.get_workflow_runs(
                 branch=self.repo.active_branch.name, status='completed'
             )
-            self.runs_develop = self.gh_repo.get_workflow_runs(
+            runs_develop = self.gh_repo.get_workflow_runs(
                 branch="develop", status="completed"
             )
             if (
@@ -165,10 +171,11 @@ class Editable:
                     if run.head_sha == self.repo.head.commit.hexsha:
                         self.current_run = run
 
-            for run in self.runs_develop[0:10]:
-                lazy_container = run.status
-                lazy_container = run.conclusion
-                lazy_container = run.head_sha
+            for run in runs_develop[0:10]:
+                self.runs_develop.append(GithubRunStub(
+                    run.status,
+                    run.conclusion,
+                    run.head_sha))
 
             self.checking_for_workflow = False
 

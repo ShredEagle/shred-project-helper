@@ -1,4 +1,7 @@
 import os
+from time import perf_counter
+from itertools import accumulate
+
 from typing import Optional
 from pathlib import Path
 
@@ -42,7 +45,18 @@ class Runner:
         show_help = False
         old_id = ""
 
+        frame_count = 0
+        fps = [0] * 100
+        start = 0
+        end = 1
+
         while True:
+            fps[frame_count % 100] = 1.0 / (end - start)
+            real_fps = accumulate(fps)
+            for i in real_fps:
+                real_fps = i / 100
+            start = perf_counter()
+            frame_count += 1
             start_frame()
 
             if is_key_pressed('?'):
@@ -171,7 +185,7 @@ class Runner:
                 input_buffer_save = input_buffer()
 
             start_panel("hehe", Percentage(100), 3)
-            text_item(str(input_buffer_save))
+            text_item(real_fps)
             end_panel()
 
             if show_help:
@@ -190,6 +204,7 @@ class Runner:
 
 
             end_frame()
+            end = perf_counter()
 
     def run_ui(self):
         os.environ.setdefault('ESCDELAY', '25')

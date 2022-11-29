@@ -54,6 +54,7 @@ class Editable:
     def __init__(self, conan_package, conan_path, gh_client, thread_pool):
         self.thread_pool = thread_pool
         self.package = conan_package
+        # FIX: This assume the name of the conanfile
         self.conan_path = (conan_path / "conanfile.py" if "conanfile.py" not in str(conan_path) else conan_path).resolve()
         self.is_local = self.conan_path.exists()
         if self.is_local:

@@ -1,6 +1,10 @@
 import os
+import shutil
+import io
+import subprocess
 from time import perf_counter
 from itertools import accumulate
+from git.cmd import Git
 
 from typing import Optional
 from pathlib import Path
@@ -16,7 +20,7 @@ from sph.editable import Editable, create_editable_from_workspace_list
 from witch import witch_init, start_frame, end_frame, start_layout, end_layout
 from witch.layout import HORIZONTAL, VERTICAL
 from witch.utils import Percentage
-from witch.widgets import start_panel, end_panel, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
+from witch.widgets import start_panel, end_panel, text_buffer, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
 from witch.state import add_text_color, selected_id, input_buffer, is_key_pressed, set_selected_id
 
 from sph.workspace import Workspace
@@ -37,6 +41,8 @@ class Runner:
         self.hovered_root = None
         self.selected_ref_with_editable = None
         self.conflict_log = []
+        self.install_proc = None
+        self.proc_output = None
 
     def main_loop(self, astdscr):
         witch_init(astdscr)
@@ -52,6 +58,9 @@ class Runner:
         fps = [0] * 100
         start = 0
         end = 1
+        git_diff = ""
+        git_hovered = False
+        install_output = ""
 
         while True:
             fps[frame_count % 100] = 1.0 / (end - start)
@@ -66,16 +75,18 @@ class Runner:
                 old_id = selected_id()
                 show_help = True
 
-            start_layout("base", HORIZONTAL, Percentage(100) - 3)
+            start_layout("base", HORIZONTAL, Percentage(100))
 
             workspace_id = start_panel("Workspaces", Percentage(20), Percentage(100), start_selected=True)
             for ws in self.workspaces:
-                _, pressed = text_item(ws.path.name)
+                hovered_ws, pressed = text_item(ws.path.name)
                 if pressed:
                     if ws in self.workspace_opened:
                         self.workspace_opened.remove(ws)
                     else:
                         self.workspace_opened.add(ws)
+                if hovered_ws and is_key_pressed("C"):
+                    self.install_workspace(ws)
 
 
                 if ws in self.workspace_opened:
@@ -117,87 +128,116 @@ class Runner:
                                         self.hovered_root = None
             end_panel()
 
-            if self.hovered_root:
-                ref, ws = self.hovered_root
-                root_editable = self.get_editable_from_ref(ref)
-
-                editables = [root_editable]
-                for ref in root_editable.required_local_lib:
-                    editables.append(self.get_editable_from_ref(ref))
-
-                start_panel(f"{ref.package.name} check", Percentage(80), Percentage(100))
-                for ed in editables:
-                    if ed and ed.is_local:
-                        text_item([(f"{ed.package.name}", "refname"), " at ", (f"{ed.conan_path.parents[1]}", "path")])
-                        if ed.repo.is_dirty():
-                            text_item([(" ", "fail"), ("Repo is dirty")])
-                        else:
-                            text_item([(" ", "success"), ("Repo is clean")])
-                            if ed.current_run and ed.current_run.status == "completed":
-                                if ed.current_run.conclusion == "success":
-                                    text_item([(" ", "success"), ("CI success")])
-                                else:
-                                    text_item([(" ", "fail"), ("CI failure")])
-                            if ed.current_run and ed.current_run.status == "in_progress":
-                                pass
-                        for req in ed.required_local_lib:
-                            req.print_check_tui(ws.path)
-                        for req in ed.required_external_lib:
-                            req.print_check_tui(ws.path)
-
-                        text_item("")
-                end_panel()
-            elif self.selected_ref_with_editable:
-                selected_ref, selected_editable, ws = self.selected_ref_with_editable
-                if selected_editable:
-                    ref = selected_editable.get_dependency_from_package(selected_ref.package)
-                    selected_ref_editable = self.get_editable_from_ref(ref)
-
-                    start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
-                    start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
-                    text_item("Choose a version to resolve the conflict (press enter to select)", selectable=False)
-                    text_item(f"In {selected_editable.package} at {selected_editable.conan_path}", selectable=False)
-                    self.resolve_conflict_item(ref, ws)
-                    for conflict in selected_ref.conflicts[ws.path]:
-                        if isinstance(conflict, Workspace):
-                            text_item(f"In {conflict.path.name}", selectable=False)
-                            conflict_ref = conflict.get_dependency_from_package(selected_ref.package)
-                            self.resolve_conflict_item(conflict_ref, ws)
-                        else:
-                            conflict_editable = self.get_editable_from_ref(selected_editable.get_dependency_from_package(conflict))
-                            if conflict_editable:
-                                conflict_ref = conflict_editable.get_dependency_from_package(selected_ref.package)
-                                text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
-                                self.resolve_conflict_item(conflict_ref, ws)
-
-                    if selected_ref_editable and selected_ref_editable.is_local:
-                        text_item("", selectable=False)
-                        text_item("Deployed recipe on conan", selectable=False)
-                        for run in selected_ref_editable.runs_develop[0:10]:
-                            if run.status == 'completed' and run.conclusion == 'success':
-                                text_item(f"  {selected_ref.package.name}/{run.head_sha[0:10]}@{selected_ref.user}/{selected_ref.channel}")
-
-                    end_panel()
-                    if is_key_pressed(KEY_ESCAPE):
-                        self.selected_ref = None
-                        set_selected_id(workspace_id)
-                    start_panel("Workspace log", Percentage(100), Percentage(19))
-                    for log in self.conflict_log:
-                        text_item(log)
-                    end_panel()
-                    end_layout()
+            if self.install_proc and not self.hovered_root:
+                if self.install_proc.poll() is not None:
+                    # finish reading proc and prepare to live if necessary
+                    for line in self.install_proc.stdout.readline():
+                        if line:
+                            self.proc_output += line
+                else:
+                    line = self.install_proc.stdout.readline()
+                    if line:
+                        self.proc_output += line
+                text_buffer(f"Installing", Percentage(80), Percentage(100), self.proc_output)
             else:
-                start_panel(f"Root check", Percentage(80), Percentage(100))
-                end_panel()
+                if self.hovered_root:
+                    ref, ws = self.hovered_root
+                    root_editable = self.get_editable_from_ref(ref)
+
+                    editables = [root_editable]
+                    for ref in root_editable.required_local_lib:
+                        editables.append(self.get_editable_from_ref(ref))
+
+                    root_check_id = start_panel(f"{ref.package.name} check", Percentage(80) if not git_hovered else Percentage(39), Percentage(100))
+                    git_hovered = False
+                    git_repo_dir = ""
+                    for ed in editables:
+                        if ed and ed.is_local:
+                            text_item([(f"{ed.package.name}", "refname"), " at ", (f"{ed.conan_path.parents[1]}", "path")])
+                            if ed.repo.is_dirty():
+                                git_hovered_temp, _ = text_item([(" ", "fail"), ("Repo is dirty")])
+                                if git_hovered_temp:
+                                    git_hovered = git_hovered_temp
+                                    git_repo_dir = ed.repo.working_dir
+                            else:
+                                text_item([(" ", "success"), ("Repo is clean")])
+                                if ed.current_run and ed.current_run.status == "completed":
+                                    if ed.current_run.conclusion == "success":
+                                        text_item([(" ", "success"), ("CI success")])
+                                    else:
+                                        text_item([(" ", "fail"), ("CI failure")])
+                                if ed.current_run and ed.current_run.status == "in_progress":
+                                    pass
+                            for req in ed.required_local_lib:
+                                req.print_check_tui(ws.path)
+                            for req in ed.required_external_lib:
+                                req.print_check_tui(ws.path)
+
+                            text_item("")
+                    end_panel()
+
+                    if git_diff != "":
+                        text_buffer('Git diff', Percentage(41), Percentage(100), git_diff)
+
+                    if git_hovered and git_diff == "":
+                        git_diff = Git(git_repo_dir).diff()
+                    elif not git_hovered:
+                        git_diff = ""
+
+                    if root_check_id == selected_id() and is_key_pressed(KEY_ESCAPE):
+                        set_selected_id(workspace_id)
+
+
+                elif self.selected_ref_with_editable:
+                    selected_ref, selected_editable, ws = self.selected_ref_with_editable
+                    if selected_editable:
+                        ref = selected_editable.get_dependency_from_package(selected_ref.package)
+                        selected_ref_editable = self.get_editable_from_ref(ref)
+                        start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
+                        start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
+
+                        if len(selected_ref.conflicts[ws.path]) > 0:
+
+                            text_item("Choose a version to resolve the conflict (press enter to select)", selectable=False)
+                            text_item(f"In {selected_editable.package} at {selected_editable.conan_path}", selectable=False)
+                            self.resolve_conflict_item(ref, ws)
+                            for conflict in selected_ref.conflicts[ws.path]:
+                                if isinstance(conflict, Workspace):
+                                    text_item(f"In {conflict.path.name}", selectable=False)
+                                    conflict_ref = conflict.get_dependency_from_package(selected_ref.package)
+                                    self.resolve_conflict_item(conflict_ref, ws)
+                                else:
+                                    conflict_editable = self.get_editable_from_ref(selected_editable.get_dependency_from_package(conflict))
+                                    if conflict_editable:
+                                        conflict_ref = conflict_editable.get_dependency_from_package(selected_ref.package)
+                                        text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
+                                        self.resolve_conflict_item(conflict_ref, ws)
+                            if selected_ref_editable and selected_ref_editable.is_local:
+                                text_item("", selectable=False)
+
+                        if selected_ref_editable and selected_ref_editable.is_local:
+                            text_item("Deployed recipe on conan", selectable=False)
+                            for run in selected_ref_editable.runs_develop[0:10]:
+                                if run.status == 'completed' and run.conclusion == 'success':
+                                    text_item(f"  {selected_ref.package.name}/{run.head_sha[0:10]}@{selected_ref.user}/{selected_ref.channel}")
+
+                        end_panel()
+                        if is_key_pressed(KEY_ESCAPE):
+                            self.selected_ref = None
+                            set_selected_id(workspace_id)
+                        start_panel("Workspace log", Percentage(100), Percentage(20))
+                        for log in self.conflict_log:
+                            text_item(log)
+                        end_panel()
+                        end_layout()
+                else:
+                    start_panel(f"Root check", Percentage(80), Percentage(100))
+                    end_panel()
 
             end_layout()
 
             if input_buffer() != -1:
                 input_buffer_save = input_buffer()
-
-            start_panel("hehe", Percentage(100), 3)
-            text_item(real_fps)
-            end_panel()
 
             if show_help:
                 id = start_floating_panel("Help", POSITION_CENTER, Percentage(50), Percentage(80))
@@ -239,6 +279,18 @@ class Runner:
             self.log_workspace_conflict_resolution(selected_conflict_ref, workspace)
 
         compute_conflicts(self.workspaces, self.editable_list)
+
+    def install_workspace(self, workspace):
+        # FIX: This needs to be configurable
+        self.proc_output = ""
+        conan = shutil.which("conan")
+        if conan:
+            self.install_proc = subprocess.Popen(
+                    [conan, "workspace", "install", "--profile", "game", "--build=missing", workspace.path.resolve()],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", cwd="/home/franz/gamedev/build")
+        else:
+            # TODO: should display a message that we can't find conan
+            pass
 
     def print_help_line(self, shortcut, help_text):
         start_same_line()

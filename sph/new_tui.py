@@ -201,10 +201,8 @@ class Runner:
 
             if show_help:
                 id = start_floating_panel("Help", POSITION_CENTER, Percentage(50), Percentage(80))
-                start_same_line()
-                text_item(("C", "path"), 10)
-                text_item("Conan workspace install hovered workspace")
-                end_same_line()
+                self.print_help_line("C", "Conan workspace install hovered workspace")
+                self.print_help_line("r", "Cleanup workspace")
                 end_floating_panel()
                 set_selected_id(id)
                 if is_key_pressed("q") or is_key_pressed(KEY_ESCAPE):
@@ -216,6 +214,12 @@ class Runner:
 
             end_frame()
             end = perf_counter()
+
+    def print_help_line(self, shortcut, help_text):
+        start_same_line()
+        text_item((shortcut, "path"), 10)
+        text_item(help_text)
+        end_same_line()
 
     def run_ui(self):
         os.environ.setdefault('ESCDELAY', '25')

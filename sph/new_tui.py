@@ -150,7 +150,8 @@ class Runner:
                 selected_ref, selected_editable, ws = self.selected_ref_with_editable
                 if selected_editable:
                     ref = selected_editable.get_dependency_from_package(selected_ref.package)
-                    ref.fill_date_from_github(self.get_editable_from_ref(ref), self.thread_pool)
+                    selected_ref_editable = self.get_editable_from_ref(ref)
+                    ref.fill_date_from_github(selected_ref_editable, self.thread_pool)
 
                     start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
                     start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
@@ -170,6 +171,14 @@ class Runner:
                                 text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
                                 text_item(f"  {conflict_ref} - {conflict_ref.date}")
                                 conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+
+                    if selected_ref_editable and selected_ref_editable.is_local:
+                        text_item("", selectable=False)
+                        text_item("Deployed recipe on conan", selectable=False)
+                        for run in selected_ref_editable.runs_develop[0:10]:
+                            if run.status == 'completed' and run.conclusion == 'success':
+                                text_item(f"  {selected_ref.package.name}/{run.head_sha[0:10]}@{selected_ref.user}/{selected_ref.channel}")
+
                     end_panel()
                     if is_key_pressed(KEY_ESCAPE):
                         self.selected_ref = None

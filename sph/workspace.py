@@ -44,7 +44,7 @@ class Workspace:
         newtext = None
         regex = r''
         if old_dependency is None:
-            regex = r"{}\/[\w]+@[\w]+\/[\w]+(#[\w])?".format(re.escape(new_dependency.package.name))
+            regex = r"{}\/[\w]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
         else:
             regex = re.escape(old_dependency)
 
@@ -60,7 +60,7 @@ class Workspace:
             ref_to_change.user = new_dependency.user
             ref_to_change.channel = new_dependency.channel
             ref_to_change.revision = new_dependency.revision
-            new_dependency.is_present_locally = ref_to_change.is_present_locally
+            new_dependency.has_local_editable = ref_to_change.has_local_editable
             return True
 
         return False
@@ -74,7 +74,10 @@ class Workspace:
             resolvedfile.write(text)
 
     def get_dependency_from_package(self, package):
-       return next(filter(lambda x: x[0].package == package, self.local_refs))[0]
+        try:
+            return next(filter(lambda x: x[0].package == package, self.local_refs))[0]
+        except StopIteration:
+            return None
 
 
     def __str__(self):

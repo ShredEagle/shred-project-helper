@@ -21,7 +21,7 @@ class ConanRef:
 
         return ref
 
-    def __init__(self, ref, thread_pool=None):
+    def __init__(self, ref):
         name, version, user, channel, revision = extract_info_from_conan_ref(
                 ref
             )
@@ -31,8 +31,8 @@ class ConanRef:
         self.channel = channel
         self.revision = revision
         self.conflicts = dict()
-        self.editable =None
         self.date = None
+        self.has_local_editable = False
 
     def __eq__(self, other):
         return hasattr(other, 'ref') and self.ref == other.ref

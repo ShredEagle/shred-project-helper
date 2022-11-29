@@ -39,17 +39,19 @@ def create_editable_dependency(editable, editables):
 
 def create_editable_from_workspace_list(workspaces, github_client=None, thread_pool=None):
     editable_list = []
+    package_set = set()
 
     local_refs = set()
     for ws in workspaces:
         local_refs.update(ws.local_refs)
 
     for conan_ref, project_conan_path in local_refs:
-        if project_conan_path.exists():
-            conan_ref.is_present_locally = True
+        if project_conan_path.exists() and conan_ref.package not in package_set:
+            conan_ref.has_local_editable = True
+            package_set.add(conan_ref.package)
             editable_list.append(Editable(conan_ref.package, project_conan_path, github_client, thread_pool))
         else:
-            conan_ref.is_present_locally = False
+            conan_ref.has_local_editable = False
 
     for ed in editable_list:
         create_editable_dependency(ed, editable_list)
@@ -90,7 +92,7 @@ class Editable:
         newtext = None
         regex = r''
         if old_dependency is None:
-            regex = r"{}\/[\w]+@[\w]+\/[\w]+(#[\w])?".format(re.escape(new_dependency.package.name))
+            regex = r"{}\/[\w]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
         else:
             regex = re.escape(old_dependency)
 
@@ -98,7 +100,7 @@ class Editable:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.conan_path, "w") as resolvedfile:
-            resolvedfile.write(text)
+            resolvedfile.write(newtext)
 
         if newtext != text:
             for dep in self.required_local_lib:

@@ -36,6 +36,7 @@ class Runner:
         self.root_opened = set()
         self.hovered_root = None
         self.selected_ref_with_editable = None
+        self.conflict_log = []
 
     def main_loop(self, astdscr):
         witch_init(astdscr)
@@ -151,26 +152,23 @@ class Runner:
                 if selected_editable:
                     ref = selected_editable.get_dependency_from_package(selected_ref.package)
                     selected_ref_editable = self.get_editable_from_ref(ref)
-                    ref.fill_date_from_github(selected_ref_editable, self.thread_pool)
 
                     start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
                     start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
                     text_item("Choose a version to resolve the conflict (press enter to select)", selectable=False)
                     text_item(f"In {selected_editable.package} at {selected_editable.conan_path}", selectable=False)
-                    text_item(f"  {ref} - {ref.date}")
+                    self.resolve_conflict_item(ref, ws)
                     for conflict in selected_ref.conflicts[ws.path]:
                         if isinstance(conflict, Workspace):
                             text_item(f"In {conflict.path.name}", selectable=False)
                             conflict_ref = conflict.get_dependency_from_package(selected_ref.package)
-                            text_item(f"  {conflict_ref} - {conflict_ref.date}")
-                            conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+                            self.resolve_conflict_item(conflict_ref, ws)
                         else:
                             conflict_editable = self.get_editable_from_ref(selected_editable.get_dependency_from_package(conflict))
                             if conflict_editable:
                                 conflict_ref = conflict_editable.get_dependency_from_package(selected_ref.package)
                                 text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
-                                text_item(f"  {conflict_ref} - {conflict_ref.date}")
-                                conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+                                self.resolve_conflict_item(conflict_ref, ws)
 
                     if selected_ref_editable and selected_ref_editable.is_local:
                         text_item("", selectable=False)
@@ -184,6 +182,8 @@ class Runner:
                         self.selected_ref = None
                         set_selected_id(workspace_id)
                     start_panel("Workspace log", Percentage(100), Percentage(19))
+                    for log in self.conflict_log:
+                        text_item(log)
                     end_panel()
                     end_layout()
             else:
@@ -214,6 +214,31 @@ class Runner:
 
             end_frame()
             end = perf_counter()
+
+    def resolve_conflict_item(self, conflict_ref, ws):
+            _, pressed = text_item(f"  {conflict_ref} - {conflict_ref.date}")
+            if pressed:
+                self.resolve_conflict(self.editable_list, conflict_ref, ws)
+            conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+
+    def log_editable_conflict_resolution(self, editable, conflict_ref, workspace):
+        self.conflict_log.append([f"Switched {conflict_ref.package.name} to ", (conflict_ref.version, "success"), f" in {editable.package.name}"])
+
+    def log_workspace_conflict_resolution(self, conflict_ref, workspace):
+        self.conflict_log.append([f"Switched {conflict_ref.package.name} to ", (conflict_ref.version, "success"), f" in {workspace.path.name}"])
+
+    def resolve_conflict(self, editable_list, selected_conflict_ref, workspace):
+        for editable in editable_list:
+            if workspace.get_dependency_from_package(editable.package):
+                version_changed = editable.change_version(selected_conflict_ref)
+                if version_changed:
+                    self.log_editable_conflict_resolution(editable, selected_conflict_ref, workspace)
+
+        version_changed = workspace.change_version(selected_conflict_ref)
+        if version_changed:
+            self.log_workspace_conflict_resolution(selected_conflict_ref, workspace)
+
+        compute_conflicts(self.workspaces, self.editable_list)
 
     def print_help_line(self, shortcut, help_text):
         start_same_line()

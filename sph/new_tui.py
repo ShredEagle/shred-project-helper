@@ -1,20 +1,20 @@
 import os
+from typing import Optional
 from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
 import click
 import curses
 from github import BadCredentialsException, Github, GithubException, TwoFactorException
-from py_cui.keys import KEY_ESCAPE
 
 from sph.config import configCreate, configSaveToken
 from sph.conflict import compute_conflicts
-from sph.editable import create_editable_from_workspace_list
+from sph.editable import Editable, create_editable_from_workspace_list
 from witch import witch_init, start_frame, end_frame, start_layout, end_layout
-from witch.layout import HORIZONTAL, VERTICAL
+from witch.layout import HORIZONTAL
 from witch.utils import Percentage
-from witch.widgets import start_panel, end_panel, text_item, start_same_line, text_buffer, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
-from witch.state import add_text_color, selected_id, set_cursor, input_buffer, is_key_pressed, set_selected_id
+from witch.widgets import start_panel, end_panel, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
+from witch.state import add_text_color, selected_id, input_buffer, is_key_pressed, set_selected_id
 
 from sph.workspace import Workspace
 
@@ -62,8 +62,14 @@ class Runner:
 
 
                 if ws in self.workspace_opened:
-                    for ref, path in [(ref, path) for ref, path in ws.local_refs if ref.ref in [x.ref for x in ws.root]]:
-                        hovered_root, pressed = text_item([(f"  {ref.ref}", "refname")])
+                    for ref, _ in [(ref, path) for ref, path in ws.local_refs if ref.ref in [x.ref for x in ws.root]]:
+                        root_editable = self.get_editable_from_ref(ref)
+                        if not root_editable or not root_editable.is_local:
+                            text_item([(f"  {ref.ref} not local", "refname")])
+                            hovered_root = False
+                            continue
+                        else:
+                            hovered_root, pressed = text_item([(f"  {ref.ref}", "refname")])
                         if hovered_root:
                             self.hovered_root = (ref, ws)
                             self.selected_ref_with_editable = None
@@ -176,7 +182,7 @@ class Runner:
         self.editable_list = create_editable_from_workspace_list(self.workspaces, self.gh_client, self.thread_pool)
         compute_conflicts(self.workspaces, self.editable_list)
 
-    def get_editable_from_ref(self, conan_ref):
+    def get_editable_from_ref(self, conan_ref) -> Optional[Editable]:
         try:
             return next(e for e in self.editable_list if e.package == conan_ref.package)
         except StopIteration:

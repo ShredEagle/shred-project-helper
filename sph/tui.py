@@ -1,374 +1,365 @@
-from concurrent.futures import ThreadPoolExecutor
 import os
-import queue
-import cursor
+import shutil
+import io
+import subprocess
+from time import perf_counter
+import threading
+from itertools import accumulate
+from git.cmd import Git
+
+from typing import Optional
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor
 import click
+import curses
 from github import BadCredentialsException, Github, GithubException, TwoFactorException
-import py_cui
+from sph.conan_ref import ConanRef
 
 from sph.config import configCreate, configSaveToken
-from sph.choice import Choice
-from sph.conan_ref import ConanRef
-from sph.conflicts_menu import ConflictsMenu
+from sph.conflict import compute_conflicts
+from sph.editable import Editable, create_editable_from_workspace_list
+from witchtui import witch_init, start_frame, end_frame, start_layout, end_layout
+from witchtui.layout import HORIZONTAL, VERTICAL
+from witchtui.utils import Percentage
+from witchtui.widgets import end_status_bar, start_panel, end_panel, start_status_bar, text_buffer, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
+from witchtui.state import add_text_color, selected_id, input_buffer, is_key_pressed, set_selected_id
+
 from sph.workspace import Workspace
-from sph.editable import create_editable_dependency, create_editable_from_workspace_list
 
-# |---------------------------------------------------------|
-# |Ws sel  | Root selection                                 |
-# |        |                                                |
-# |        |------------------------------------------------|
-# |        |Root      | Dependency repository info          |
-# |        |Reposit   |                                     |
-# |        |----------|-------------------------------------|
-# |        |Depend    |conflict resolution                  |
-# |        |list      |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |        |          |                                     |
-# |---------------------------------------------------------|
-#
-# Transitions:
-# - Workspace select
-#   - set selected_workspace
-#   - refresh Root selection
-#   - remove root selected
-#   - remove dependecy selected
-# - Workspace unselect
-#   - remove selected_workspace
-#   - remove Root selected
-#   - remove dependecy selected
-# - Root select
-#   - select root
-#   - remove selected dependency
-# - Root unselect
-#   - remove Root selected
-#   - remove dependecy selected
-# - Dependency Select
-#   - select dependency
-# - Dependency Unselect
-#   - remove dependecy selected
+KEY_ESCAPE = chr(27)
 
+class Runner:
 
-class WorkspaceItem:
-    def __init__(self, workspace):
-        self.workspace = workspace
-        self.is_selected = False
-    
-    def __str__(self):
-        return f"{'* ' if self.is_selected else '  '} {self.workspace.path.name}"
-
-class RootItem:
-    def __init__(self, conan_ref, conan_path):
-        self.ref = conan_ref
-        self.conan_path = conan_path
-        self.is_selected = False
-
-    def __str__(self):
-        return f"{'* ' if self.is_selected else '  '}{self.ref.ref} at ({self.conan_path.resolve().parents[0]}){' not present locally' if not self.ref.is_present_locally else ''}"
-
-class DependencyItem:
-    def __init__(self, conan_ref, local):
-        self.ref = conan_ref
-        self.is_selected = False
-        self.is_present_locally = local
-
-    def __str__(self):
-        if self.is_selected:
-            return f"  S {self.ref.package.name}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
-        if self.is_present_locally:
-            return f"  L {self.ref.package.name}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
-        return f"  X {self.ref.ref}{' has conflicts' if len(self.ref.conflicts) > 0 else ''}"
-
-class GitInfo:
-    def __init__(self, editable):
-        self.editable = editable
-
-    def __str__(self):
-        if self.editable.repo:
-            return ' Git is clean' if not self.editable.repo.is_dirty() else ' Git is dirty'
-        return ''
-
-class GithubInfo:
-    def __init__(self, editable):
-        self.editable = editable
-
-    def __str__(self):
-        if self.editable.gh_repo is not None:
-            if self.editable.gh_repo is not False:
-                return ' Github is ready'
-            else:
-                return ' No repo on github'
-        else:
-            return 'Waiting for github repo'
-
-class WorkflowInfo:
-    def __init__(self, editable):
-        self.editable = editable
-
-    def __str__(self):
-        if self.editable.current_run is not None:
-            if not self.editable.current_run:
-                return 'No CI'
-            if self.editable.current_run.status == 'in_progress':
-                return 'CI in progress'
-            if self.editable.current_run.status == 'completed':
-                if self.editable.current_run.conclusion == 'success':
-                    return ' CI success'
-                else:
-                    return ' CI failed'
-        else:
-            return 'Waiting for CI status'
-
-        return ''
-
-class WorkspaceTUI:
-
-    def __init__(self, master, workspace_dir, gh_client, thread_pool):
+    def __init__(self, workspace_dir, gh_client, thread_pool):
         self.thread_pool = thread_pool
-        self.workflow_msg = ''
+        self.workspace_dir = workspace_dir
         self.gh_client = gh_client
-        self.master = master
-        self.master.toggle_unicode_borders()
-        self.workspace_selected_index = -1
+        self.running = True
 
-        self.workspaces = [WorkspaceItem(Workspace(Path(workspace_dir) / Path(x))) for x in os.listdir(workspace_dir) if "yml" in x]
+        # UI state
+        self.workspace_opened = set()
+        self.root_opened = set()
+        self.hovered_root = None
+        self.show_help = False
 
+        # Workspace, ref and editable data
+        self.selected_ref_with_editable = None
+        self.workspaces = []
         self.editable_list = []
+        self.github_rate = None
 
-        self.ws_menu = self.master.add_scroll_menu('Workspaces', 0, 0, row_span=16, column_span=3);
-        self.ws_menu.add_key_command(py_cui.keys.KEY_ENTER, self.select_workspace)
-        self.ws_menu.add_text_color_rule('', py_cui.WHITE_ON_BLACK, rule_type="contains", selected_color=py_cui.GREEN_ON_BLACK)
-        self.ws_menu.add_item_list(self.workspaces)
+        # Cached data
+        self.conflict_log = []
+        self.install_proc = None
+        self.proc_output = None
+        self.ref_from_runs = []
+        self.id_selected_before_help = ""
 
-        self.root_list = self.master.add_scroll_menu('Roots', 0, 3, row_span=2, column_span=13)
-        self.root_list.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_to_ws)
-        self.root_list.add_key_command(py_cui.keys.KEY_ENTER, self.select_root)
-        self.root_list.add_text_color_rule('^  [^\s]*', py_cui.YELLOW_ON_BLACK, 'contains', match_type="regex")
-        self.root_list.add_text_color_rule('^\* [^\s]*', py_cui.GREEN_ON_BLACK, 'contains', match_type="regex")
+        #Thread event
+        self.wait_check_github = None
 
-        self.root_info = self.master.add_scroll_menu('Root info', 2, 3, row_span=2, column_span=3)
-        self.root_info.set_selectable(False)
-        self.root_info.add_text_color_rule('', py_cui.RED_ON_BLACK, rule_type="contains")
-        self.root_info.add_text_color_rule('', py_cui.GREEN_ON_BLACK, rule_type="contains")
+    def main_loop(self, astdscr):
+        witch_init(astdscr)
+        add_text_color("refname", curses.COLOR_YELLOW)
+        add_text_color("path", curses.COLOR_CYAN)
+        add_text_color("success", curses.COLOR_GREEN)
+        add_text_color("fail", curses.COLOR_RED)
+        input_buffer_save = 0
 
-        self.root_tree = self.master.add_scroll_menu('Dependency tree', 4, 3, row_span=12, column_span=3)
-        self.root_tree.add_text_color_rule('L ', py_cui.YELLOW_ON_BLACK, rule_type="startswith")
-        self.root_tree.add_text_color_rule('X ', py_cui.CYAN_ON_BLACK, rule_type="startswith")
-        self.root_tree.add_text_color_rule('S ', py_cui.GREEN_ON_BLACK, rule_type="startswith")
-        self.root_tree.add_key_command(py_cui.keys.KEY_ENTER, self.select_dependency)
-        self.root_tree.add_key_command(py_cui.keys.KEY_UP_ARROW, self.avoid_select_root)
-        self.root_tree.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_to_roots)
-        self.root_tree.add_key_command(py_cui.keys.get_ascii_from_char('?'), self.show_root_tree_help)
+        frame_count = 0
+        fps = [0.] * 100
+        start = 0
+        end = 1
+        git_diff = ""
+        git_hovered = False
 
-        self.dep_repo_info = self.master.add_scroll_menu(f'Dependency repo info', 2, 6, row_span=2, column_span=10)
-        self.dep_repo_info.set_selectable(False)
-        self.dep_repo_info.add_text_color_rule('', py_cui.RED_ON_BLACK, rule_type="contains")
-        self.dep_repo_info.add_text_color_rule('', py_cui.GREEN_ON_BLACK, rule_type="contains")
+        while self.running:
+            fps[frame_count % 100] = 1.0 / (end - start)
+            real_fps = accumulate(fps)
+            for i in real_fps:
+                real_fps = i / 100
+            start = perf_counter()
+            frame_count += 1
+            start_frame()
 
-        self.dep_info = self.master.add_custom_widget(ConflictsMenu, f'Conflict resolution', 4, 6, row_span=8, column_span=10, padx=0, pady=0)
-        self.dep_info.add_key_command(py_cui.keys.KEY_BACKSPACE, self.return_root_tree)
-        self.dep_info.add_text_color_rule('', py_cui.WHITE_ON_BLACK, selected_color=py_cui.CYAN_ON_BLACK, rule_type="contains")
-        self.dep_info.add_key_command(py_cui.keys.KEY_ENTER, self.resolve_conflict_with_selected_dep)
+            if is_key_pressed('?'):
+                self.id_selected_before_help = selected_id()
+                self.show_help = True
 
-        self.logger = self.master.add_scroll_menu(f'Resolution journal', 12, 6, row_span=4, column_span=10, padx=0, pady=0)
-        self.logger.set_selectable(False)
+            start_layout("base", HORIZONTAL, Percentage(100) - 1)
 
-        self.master.move_focus(self.ws_menu)
+            workspace_id = start_panel("Workspaces", Percentage(20), Percentage(100), start_selected=True)
+            for ws in self.workspaces:
+                hovered_ws, pressed = text_item(ws.path.name)
+                if pressed:
+                    if ws in self.workspace_opened:
+                        self.workspace_opened.remove(ws)
+                    else:
+                        self.workspace_opened.add(ws)
+                if hovered_ws and is_key_pressed("C"):
+                    self.install_workspace(ws)
 
-    def resolve_conflict_with_selected_dep(self):
-        selected_conflict = self.dep_info.get()
-        if selected_conflict.from_github:
-            for editable in self.editable_list:
-                version_changed = editable.change_version(selected_conflict.ref)
+
+                if ws in self.workspace_opened:
+                    for ref, _ in [(ref, path) for ref, path in ws.local_refs if ref.ref in [x.ref for x in ws.root]]:
+                        root_editable = self.get_editable_from_ref(ref)
+                        if not root_editable or not root_editable.is_local:
+                            text_item([(f"  {ref.ref} not local", "refname")])
+                            hovered_root = False
+                            continue
+                        else:
+                            hovered_root, pressed = text_item([(f"  {ref.ref}", "refname")])
+                        if hovered_root:
+                            self.hovered_root = (ref, ws)
+                            self.selected_ref_with_editable = None
+                        if pressed:
+                            if ref in self.root_opened:
+                                self.root_opened.remove(ref)
+                            else:
+                                self.root_opened.add(ref)
+
+                        if ref in self.root_opened:
+                            root_editable = self.get_editable_from_ref(ref)
+                            if root_editable:
+                                for ref in root_editable.required_local_lib:
+                                    conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
+                                    symbol = " " if not conflict else ""
+                                    _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "path"))
+
+                                    if pressed:
+                                        self.selected_ref_with_editable = (ref, root_editable, ws)
+                                        self.hovered_root = None
+                                for ref in root_editable.required_external_lib:
+                                    conflict = ws.path in ref.conflicts and len(ref.conflicts[ws.path]) > 0
+                                    symbol = " " if not conflict else ""
+                                    _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "refname"))
+
+                                    if pressed:
+                                        self.selected_ref_with_editable = (ref, root_editable, ws)
+                                        self.hovered_root = None
+            end_panel()
+
+            if self.install_proc and not self.hovered_root and self.proc_output:
+                if self.install_proc.poll() is not None:
+                    # finish reading proc and prepare to live if necessary
+                    for line in self.install_proc.stdout.readline():
+                        if line:
+                            self.proc_output += line
+                else:
+                    line = self.install_proc.stdout.readline()
+                    if line:
+                        self.proc_output += line
+                text_buffer(f"Installing", Percentage(80), Percentage(100), self.proc_output)
+            else:
+                # Cleanup data from install process
+                self.install_proc = None
+                self.proc_output = None
+
+                if self.hovered_root:
+                    # Cleanup cache data from other screens
+                    self.ref_from_runs = []
+
+                    ref, ws = self.hovered_root
+                    root_editable = self.get_editable_from_ref(ref)
+
+                    editables = [root_editable]
+                    for ref in root_editable.required_local_lib:
+                        editables.append(self.get_editable_from_ref(ref))
+
+                    root_check_id = start_panel(f"{ref.package.name} check", Percentage(80) if not git_hovered else Percentage(39), Percentage(100))
+                    git_hovered = False
+                    git_repo_dir = ""
+                    for ed in editables:
+                        if ed and ed.is_local:
+                            text_item([(f"{ed.package.name}", "refname"), " at ", (f"{ed.conan_path.parents[1]}", "path")])
+                            if ed.repo.is_dirty():
+                                git_hovered_temp, _ = text_item([(" ", "fail"), ("Repo is dirty")])
+                                if git_hovered_temp:
+                                    git_hovered = git_hovered_temp
+                                    git_repo_dir = ed.repo.working_dir
+                            else:
+                                text_item([(" ", "success"), ("Repo is clean")])
+                                if ed.current_run and ed.current_run.status == "completed":
+                                    if ed.current_run.conclusion == "success":
+                                        text_item([(" ", "success"), ("CI success")])
+                                    else:
+                                        text_item([(" ", "fail"), ("CI failure")])
+                                if ed.current_run and ed.current_run.status == "in_progress":
+                                    text_item("CI in progress")
+                            for req in ed.required_local_lib:
+                                req.print_check_tui(ws.path)
+                            for req in ed.required_external_lib:
+                                req.print_check_tui(ws.path)
+
+                            text_item("")
+                    end_panel()
+
+                    if git_diff != "":
+                        text_buffer('Git diff', Percentage(41), Percentage(100), git_diff)
+
+                    if git_hovered and git_diff == "":
+                        git_diff = Git(git_repo_dir).diff()
+                    elif not git_hovered:
+                        git_diff = ""
+
+                    if root_check_id == selected_id() and is_key_pressed(KEY_ESCAPE):
+                        set_selected_id(workspace_id)
+
+                elif self.selected_ref_with_editable:
+                    selected_ref, selected_editable, ws = self.selected_ref_with_editable
+                    if selected_editable:
+                        ref = selected_editable.get_dependency_from_package(selected_ref.package)
+                        selected_ref_editable = self.get_editable_from_ref(ref)
+                        start_layout("ref_panel_and_log", VERTICAL, Percentage(80))
+                        start_panel(f"{selected_ref.ref} conflict resolution", Percentage(100), Percentage(80), start_selected=True)
+
+                        if len(selected_ref.conflicts[ws.path]) > 0:
+
+                            text_item("Choose a version to resolve the conflict (press enter to select)", selectable=False)
+                            text_item(f"In {selected_editable.package} at {selected_editable.conan_path}", selectable=False)
+                            self.resolve_conflict_item(ref, ws)
+                            for conflict in selected_ref.conflicts[ws.path]:
+                                if isinstance(conflict, Workspace):
+                                    text_item(f"In {conflict.path.name}", selectable=False)
+                                    conflict_ref = conflict.get_dependency_from_package(selected_ref.package)
+                                    self.resolve_conflict_item(conflict_ref, ws)
+                                else:
+                                    conflict_editable = self.get_editable_from_ref(selected_editable.get_dependency_from_package(conflict))
+                                    if conflict_editable:
+                                        conflict_ref = conflict_editable.get_dependency_from_package(selected_ref.package)
+                                        text_item(f"In {conflict_editable.package} at {conflict_editable.conan_path.resolve()}", selectable=False)
+                                        self.resolve_conflict_item(conflict_ref, ws)
+                            if selected_ref_editable and selected_ref_editable.is_local:
+                                text_item("", selectable=False)
+
+                        if selected_ref_editable and selected_ref_editable.is_local:
+                            runs_to_convert_to_ref = [run for run in selected_ref_editable.runs_develop[0:10] if run.status == "completed" and run.conclusion == "success"]
+                            if len(self.ref_from_runs) != len(runs_to_convert_to_ref):
+                                for run in runs_to_convert_to_ref:
+                                    conflict_ref = ConanRef(f"{selected_ref.package.name}/{run.head_sha[0:10]}@{selected_ref.user}/{selected_ref.channel}")
+                                    if conflict_ref not in self.ref_from_runs:
+                                        self.ref_from_runs.append(conflict_ref)
+
+                            if len(self.ref_from_runs) > 0:
+                                text_item("Deployed recipe on conan", selectable=False)
+                                for conflict_ref in self.ref_from_runs:
+                                        self.resolve_conflict_item(conflict_ref, ws)
+
+                        end_panel()
+                        if is_key_pressed(KEY_ESCAPE):
+                            self.selected_ref = None
+                            set_selected_id(workspace_id)
+                        start_panel("Workspace log", Percentage(100), Percentage(20))
+                        for log in self.conflict_log:
+                            text_item(log)
+                        end_panel()
+                        end_layout()
+                else:
+                    start_panel(f"Root check", Percentage(80), Percentage(100))
+                    end_panel()
+
+            end_layout()
+
+            # TODO: status about github client
+
+            if is_key_pressed("r"):
+                self.load_stuff_and_shit()
+
+            start_status_bar('test')
+            if self.github_rate:
+                text_item(f" Github rate limit: {self.github_rate.limit - self.github_rate.remaining}/{self.github_rate.limit}", 30)
+                text_item(f" ? Shows help, Tab to switch panel, Enter to open workspace, Enter to open root, Enter to open dependency", Percentage(100) - 31)
+            end_status_bar()
+
+            if self.show_help:
+                id = start_floating_panel("Help", POSITION_CENTER, Percentage(50), Percentage(80))
+                #self.print_help_line("C", "Conan workspace install hovered workspace")
+                #self.print_help_line("d", "Cleanup workspace")
+                self.print_help_line("Enter", "Opens workspace, root and dependency")
+                self.print_help_line("Tab", "Switch panel selected")
+                self.print_help_line("Esc/q", "Quits help or app")
+                self.print_help_line("r", "Refresh panel")
+                end_floating_panel()
+                set_selected_id(id)
+                if is_key_pressed("q") or is_key_pressed(KEY_ESCAPE):
+                    set_selected_id(self.id_selected_before_help)
+                    self.show_help = False
+            elif is_key_pressed("q") or is_key_pressed(KEY_ESCAPE):
+                raise SystemExit()
+
+            end_frame()
+            end = perf_counter()
+
+    def resolve_conflict_item(self, conflict_ref, ws):
+            _, pressed = text_item(f"  {conflict_ref} - {conflict_ref.date}")
+            if pressed:
+                self.resolve_conflict(self.editable_list, conflict_ref, ws)
+            conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
+
+    def log_editable_conflict_resolution(self, editable, conflict_ref, workspace):
+        self.conflict_log.append([f"Switched {conflict_ref.package.name} to ", (conflict_ref.version, "success"), f" in {editable.package.name}"])
+
+    def log_workspace_conflict_resolution(self, conflict_ref, workspace):
+        self.conflict_log.append([f"Switched {conflict_ref.package.name} to ", (conflict_ref.version, "success"), f" in {workspace.path.name}"])
+
+    def resolve_conflict(self, editable_list, selected_conflict_ref, workspace):
+        for editable in editable_list:
+            if workspace.get_dependency_from_package(editable.package):
+                version_changed = editable.change_version(selected_conflict_ref)
                 if version_changed:
-                    create_editable_dependency(editable, self.editable_list)
-                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in {editable.package.name}')
-                    self.logger._scroll_down(self.logger.get_viewport_height())
+                    self.log_editable_conflict_resolution(editable, selected_conflict_ref, workspace)
 
-            version_changed = self.workspace.change_version(selected_conflict.ref)
-            if version_changed:
-                self.logger._view_items.append(f'Switch {selected_conflict.ref.package} to {selected_conflict.ref.version} in workspace {self.workspace.path.resolve()}')
-                self.logger._scroll_down(self.logger.get_viewport_height())
+        version_changed = workspace.change_version(selected_conflict_ref)
+        if version_changed:
+            self.log_workspace_conflict_resolution(selected_conflict_ref, workspace)
+
+        compute_conflicts(self.workspaces, self.editable_list)
+
+    def install_workspace(self, workspace):
+        # FIX: This needs to be configurable
+        self.proc_output = ""
+        conan = shutil.which("conan")
+        if conan:
+            self.install_proc = subprocess.Popen(
+                    [conan, "workspace", "install", "--profile", "game", "--build=missing", workspace.path.resolve()],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", cwd="/home/franz/gamedev/build")
         else:
-            modified_conflict_list = [e for e in self.dep_info.get_item_list() if e is not selected_conflict and isinstance(e, Choice) and not e.from_github]
+            # TODO: should display a message that we can't find conan
+            pass
 
-            for conflict in modified_conflict_list:
-                conflict.resolve_conflict(selected_conflict.ref)
-                if not isinstance(conflict.conflicted_editable, Workspace):
-                    create_editable_dependency(conflict.conflicted_editable, self.editable_list)
-                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} from {conflict.ref.version} to {selected_conflict.ref.version} in {conflict.conflicted_editable.package.name}')
-                    self.logger._scroll_down(self.logger.get_viewport_height())
-                else:
-                    self.logger._view_items.append(f'Switch {selected_conflict.ref.package} from {conflict.ref.version} to {selected_conflict.ref.version} in workspace {conflict.conflicted_editable.path.resolve()}')
-                    self.logger._scroll_down(self.logger.get_viewport_height())
+    def print_help_line(self, shortcut, help_text):
+        start_same_line()
+        text_item((shortcut, "path"), 10)
+        text_item(help_text)
+        end_same_line()
 
-        for ed in self.editable_list:
-            for dep in ed.required_local_lib:
-                dep.conflicts = set()
+    def run_ui(self):
+        os.environ.setdefault('ESCDELAY', '25')
+        curses.wrapper(self.main_loop)
 
-            for dep in ed.required_external_lib:
-                dep.conflicts = set()
+    def load_stuff_and_shit(self):
+        self.workspaces = [Workspace(Path(self.workspace_dir) / Path(x)) for x in os.listdir(self.workspace_dir) if "yml" in x]
+        self.editable_list = create_editable_from_workspace_list(self.workspaces, self.gh_client, self.thread_pool)
+        compute_conflicts(self.workspaces, self.editable_list)
+        self.thread_pool.submit(self.check_github_rate)
 
-        self.compute_conflicts(self.workspace)
+    def check_github_rate(self):
+        while self.running:
+            self.wait_check_github = threading.Event()
+            self.github_rate = self.gh_client.get_rate_limit().core
+            self.wait_check_github.wait(timeout=10.)
 
-        self.return_root_tree()
-        self.select_dependency()
-
-
-    def show_root_tree_help(self):
-        self.master.show_menu_popup('Dependency tree help',
-                                    [
-                                        'Enter     select dependency',
-                                        'c         commit root repo'
-                                    ], lambda x: x)
-
-    def select_workspace(self):
-        self.root_list.clear()
-
-        for w in self.ws_menu.get_item_list():
-            w.is_selected = False
-
-        item: WorkspaceItem = self.ws_menu.get()
-        item.is_selected = True
-
-        self.workspace = item.workspace
-        self.editable_list = create_editable_from_workspace(item.workspace, self.gh_client, self.thread_pool)
-        self.compute_conflicts(item.workspace)
-        self.root_list.add_item_list([RootItem(ref, path) for (ref, path) in item.workspace.local_refs if ref.ref in [x.ref for x in item.workspace.root]])
-        self.master.move_focus(self.root_list)
-
-    def return_to_ws(self):
-        self.root_list.clear()
-        self.master.move_focus(self.ws_menu)
-
-    def select_root(self):
-        item = self.root_list.get()
-
-        if item.ref.is_present_locally:
-            item.is_selected = True
-            self.create_local_root_data(item)
-        else:
-            self.create_non_local_root_data(item)
-
-    def return_to_roots(self):
-        self.master.move_focus(self.root_list)
-        self.root_tree.clear()
-        self.root_info.clear()
-
-    def select_dependency(self):
-        for d in self.root_tree.get_item_list():
-            if isinstance(d, DependencyItem):
-                    d.is_selected = False
-
-        dependency = self.root_tree.get()
-        dependency.is_selected = True
-
-        self.dep_repo_info.set_title(f'{dependency.ref.ref} repo info')
-
-        self.dependency_editable = self.get_editable_from_ref(dependency.ref)
-        if self.dependency_editable:
-            self.dependency_editable.check_workflow(True)
-            repo_item_list = [
-                    GitInfo(self.dependency_editable),
-                    GithubInfo(self.dependency_editable),
-                    WorkflowInfo(self.dependency_editable)
-                    ]
-            self.dep_repo_info.add_item_list(repo_item_list)
-
-
-        self.dep_info.set_title(f'{dependency.ref.ref} info')
-
-        item_list = []
-        item_list += self.create_dep_item_list(dependency)
-
-        self.dep_info.add_item_list(item_list)
-        self.master.move_focus(self.dep_info)
-
-    def return_root_tree(self):
-        self.master.move_focus(self.root_tree)
-        self.dep_repo_info.clear()
-        self.dep_repo_info.set_title('Dependency repo info')
-        self.dep_info.clear()
-        self.dep_info.set_title('Conflict resolution')
-
-    def create_local_root_data(self, root):
-        self.current_editable = [e for e in self.editable_list if e.package is root.ref.package][0]
-        self.root_info.add_item_list([
-            GitInfo(self.current_editable),
-            GithubInfo(self.current_editable),
-            WorkflowInfo(self.current_editable)])
-
-        item_list = [self.current_editable.package.name]
-
-        for dep in self.current_editable.required_local_lib:
-            item_list.append(DependencyItem(dep, True))
-
-        for dep in self.current_editable.required_external_lib:
-            item_list.append(DependencyItem(dep, False))
-
-
-        self.root_tree.add_item_list(item_list)
-        self.root_tree.set_selected_item_index(1)
-        self.root_tree.set_help_text('Enter to select dependency - C to commit')
-        self.master.move_focus(self.root_tree)
-
-    def avoid_select_root(self):
-        # Hack to avoid selecting the Root
-        if self.root_tree.get_selected_item_index() == 1:
-            self.root_tree.set_selected_item_index(2)
-
-    def create_dep_item_list(self, dependency):
-        base_list = []
-        if len(dependency.ref.conflicts) != 0:
-            ref = self.current_editable.get_dependency_from_package(dependency.ref.package)
-            base_list += [
-                "Choose a version to resolve conflict (press enter to select)",
-                f'In {self.current_editable.package} at {self.current_editable.conan_path.resolve()}:',
-                Choice(ref, self.get_editable_from_ref(ref), self.current_editable, self.thread_pool)
-            ]
-            for conflict in dependency.ref.conflicts:
-                if isinstance(conflict, Workspace):
-                    ref = conflict.get_dependency_from_package(dependency.ref.package)
-                    base_list += [
-                            f'In {conflict.path.name}:',
-                            Choice(ref, self.get_editable_from_ref(ref), conflict, self.thread_pool)
-                    ]
-                else:
-                    editable = self.get_editable_from_ref(self.current_editable.get_dependency_from_package(conflict))
-                    ref = editable.get_dependency_from_package(dependency.ref.package)
-                    base_list += [
-                        f'In {editable.package} at {editable.conan_path.resolve()}:',
-                        Choice(ref, self.get_editable_from_ref(ref), editable, self.thread_pool)
-                    ]
-
-        if dependency.is_present_locally:
-            base_list += ['']
-            base_list += ['Deployed recipe on conan']
-            editable = self.get_editable_from_ref(dependency.ref)
-            for run in editable.runs_develop[0:10]:
-                if run.status == 'completed' and run.conclusion == 'success':
-                    new_ref = ConanRef(f'{dependency.ref.package.name}/{run.head_sha[0:10]}@{dependency.ref.user}/{dependency.ref.channel}')
-                    new_ref.date = run.created_at
-                    base_list += [Choice(new_ref, self.get_editable_from_ref(new_ref), editable, self.thread_pool, from_github=True)]
-
-        return base_list 
-
-    def create_non_local_root_data(self, root):
-        self.dep_info.add_item_list([f"No git repo for {root.ref.ref}"])
-
-
+    def get_editable_from_ref(self, conan_ref) -> Optional[Editable]:
+        try:
+            return next(e for e in self.editable_list if e.package == conan_ref.package)
+        except StopIteration:
+            return None
 
 @click.command()
 @click.option("--github-token", "-gt")
 @click.argument("workspace_dir")
 def tui(github_token, workspace_dir):
-    cursor.hide()
     thread_pool = ThreadPoolExecutor(max_workers=20)
     github_client = None;
 
@@ -402,15 +393,16 @@ def tui(github_token, workspace_dir):
         click.echo(e)
         raise click.Abort()
 
-    root = py_cui.PyCUI(16, 16)
-    root.set_title('Conan workspace manager')
-    root.set_refresh_timeout(1)
-
-    WorkspaceTUI(root, workspace_dir, github_client, thread_pool)
+    runner = Runner(workspace_dir, github_client, thread_pool)
 
     try:
-        root.start()
-        cursor.show()
-        thread_pool.shutdown(wait=False, cancel_futures=True)
-    except Exception as e:
-        cursor.show()
+        work = thread_pool.submit(runner.load_stuff_and_shit)
+        runner.run_ui()
+    except (KeyboardInterrupt, SystemExit):
+        runner.running = False
+        if runner.wait_check_github:
+            runner.wait_check_github.set()
+        work.cancel()
+        print("Waiting for queries to process")
+        while not work.done():
+            pass

@@ -6,7 +6,7 @@ from colorama import Fore
 
 from sph.conan_package import ConanPackage
 from sph.utils import extract_info_from_conan_ref, t
-from witch.widgets import text_item
+from witchtui.widgets import text_item
 
 class ConanRef:
     @property

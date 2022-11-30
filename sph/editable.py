@@ -96,7 +96,7 @@ class Editable:
         else:
             regex = re.escape(old_dependency)
 
-        with open(self.conan_path, "r") as conanfile:
+        with open(self.conan_path, "rU") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.conan_path, "w") as resolvedfile:
@@ -128,7 +128,7 @@ class Editable:
         try:
             self.gh_repo = self.gh_client.get_repo(f"{self.org}/{self.gh_repo_name}")
             return True
-        except Exception:
+        except Exception as e:
             self.gh_repo = False
             return False
         
@@ -183,7 +183,7 @@ class Editable:
 
             if self.current_run is None:
                 self.current_run = False
-        except Exception:
+        except Exception as e:
             self.checking_for_workflow = False
             self.current_run = False
 

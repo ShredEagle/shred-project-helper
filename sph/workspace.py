@@ -48,7 +48,7 @@ class Workspace:
         else:
             regex = re.escape(old_dependency)
 
-        with open(self.path, "r") as conanfile:
+        with open(self.path, "rU") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.path, "w") as resolvedfile:
@@ -79,6 +79,10 @@ class Workspace:
         except StopIteration:
             return None
 
+    def __eq__(self, other):
+        if isinstance(other, Workspace):
+            return self.path == other.path
+        return False
 
     def __str__(self):
         return self.path.name

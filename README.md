@@ -1,4 +1,6 @@
 # Shred project helper
+## Installation
+`pip install sph`
 ## Terminal UI
 `sph tui path/to/workspace_directory``` or ```sph tui -gt github_token path/to/workspace_directory`
 

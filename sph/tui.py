@@ -5,7 +5,6 @@ import subprocess
 from time import perf_counter
 import threading
 from itertools import accumulate
-from git.cmd import Git
 
 from typing import Optional
 from pathlib import Path
@@ -19,11 +18,12 @@ from sph.conan_ref import ConanRef
 from sph.config import configCreate, configSaveToken
 from sph.conflict import compute_conflicts
 from sph.editable import Editable, create_editable_from_workspace_list
+from sph.semver import Semver
 from witchtui import witch_init, start_frame, end_frame, start_layout, end_layout
 from witchtui.layout import HORIZONTAL, VERTICAL
 from witchtui.utils import Percentage
 from witchtui.widgets import end_status_bar, start_panel, end_panel, start_status_bar, text_buffer, text_item, start_same_line, end_same_line, start_floating_panel, end_floating_panel, POSITION_CENTER
-from witchtui.state import add_text_color, selected_id, input_buffer, is_key_pressed, set_selected_id
+from witchtui.state import add_text_color, selected_id, is_key_pressed, set_selected_id
 
 from sph.workspace import Workspace
 
@@ -48,6 +48,7 @@ class Runner:
         self.workspaces = []
         self.editable_list = []
         self.github_rate = None
+        self.conan_base_newest_version = None
 
         # Cached data
         self.conflict_log = []
@@ -57,9 +58,12 @@ class Runner:
         self.id_selected_before_help = ""
         self.git_repo_for_diff = None
         self.git_diff = ""
+        self.conan_base_proc = None
 
         #Thread event
         self.wait_check_github = None
+
+        self.conan_base_regex = f"shred_conan_base\/(\d+\.\d+\.\d+)"
 
     def main_loop(self, astdscr):
         witch_init(astdscr)
@@ -70,16 +74,15 @@ class Runner:
         input_buffer_save = 0
 
         frame_count = 0
-        fps = [0.] * 100
+        fps = [0.] * 10
         start = 0
         end = 1
-        rev_list_regex = r"(\d)\t(\d)"
 
         while self.running:
-            fps[frame_count % 100] = 1.0 / (end - start)
+            fps[frame_count % 10] = 1.0 / (end - start)
             real_fps = accumulate(fps)
             for i in real_fps:
-                real_fps = i / 100
+                real_fps = i / 10
             start = perf_counter()
             frame_count += 1
             start_frame()
@@ -142,7 +145,7 @@ class Runner:
             end_panel()
 
             if self.install_proc and not self.hovered_root and self.proc_output:
-                if self.install_proc.poll() is not None:
+                if self.install_proc.poll():
                     # finish reading proc and prepare to live if necessary
                     for line in self.install_proc.stdout.readline():
                         if line:
@@ -169,38 +172,56 @@ class Runner:
                         editables.append(self.get_editable_from_ref(ref))
 
                     root_check_id = start_panel(f"{ref.package.name} check", Percentage(80) if not self.git_repo_for_diff else Percentage(39), Percentage(100))
+
                     self.git_repo_for_diff = None
+
                     for ed in editables:
-                        ahead = 0
-                        behind = 0
-                        ci_status_string = ""
                         if ed and ed.is_local:
+                            ahead = 0
+                            behind = 0
+
                             text_item([(f"{ed.package.name}", "refname"), " at ", (f"{ed.conan_path.parents[1]}", "path")])
-                            if ed.repo.is_dirty():
-                                git_hovered_temp, _ = text_item([(" ", "fail"), ("Repo is dirty")])
+
+                            ed.check_repo_dirty()
+                            if ed.is_repo_dirty:
+                                git_hovered_temp, _ = text_item([(" ", "fail"), (f"Repo is dirty ({ed.repo.active_branch})")])
                                 if git_hovered_temp:
                                     self.git_repo_for_diff = ed.repo
+
+                                # Detect external dirtyness
+                                # Cmake submodule is dirty
+                                ed.check_external_status()
+                                if ed.cmake_status:
+                                    text_item(ed.cmake_status)
+                                # Workflows are not up to date
+                                # Conan base is not up to date
                             else:
-                                rev_list = ed.repo.git.rev_list(["--left-right", "--count", f"{ed.repo.active_branch}...origin/develop"])
-                                rev_matches = re.match(rev_list_regex, rev_list)
+                                ed.update_rev_list()
+                                rev_matches = ed.rev_list
                                 rev_string = ""
+
                                 if rev_matches:
                                     ahead = rev_matches.group(1)
                                     behind = rev_matches.group(2)
                                 
                                     if int(ahead) != 0 or int(behind) != 0:
-                                        rev_string = f" ↑{ahead}↓{behind}"
-                                    if int(ahead) != 0:
-                                        ci_status_string = f" but {ahead} commit behind behind local repo"
+                                        rev_string = f" ↑{ahead}↓{behind} from origin/develop"
 
-                                text_item([(" ", "success"), ("Repo is clean"), rev_string])
+                                text_item([(" ", "success"), (f"Repo is clean ({ed.repo.active_branch})"), rev_string])
                                 if ed.current_run and ed.current_run.status == "completed":
                                     if ed.current_run.conclusion == "success":
-                                        text_item([(" ", "success"), ("CI success"), ci_status_string])
+                                        text_item([(" ", "success"), (f"CI success for {ed.repo.active_branch}")])
                                     else:
-                                        text_item([(" ", "fail"), ("CI failure")])
+                                        text_item([(" ", "fail"), (f"CI failure for {ed.repo.active_branch}")])
                                 if ed.current_run and ed.current_run.status == "in_progress":
                                     text_item("CI in progress")
+
+                            ed.update_conan_base_version()
+                            if ed.conan_base_version and ed.conan_base_version < self.conan_base_newest_version:
+                                text_item([(" ", "fail"), (f"shred_conan_base is not up to date (local={ed.conan_base_version}, adnn={self.conan_base_newest_version})")])
+                            else:
+                                text_item([(" ", "success"), (f"shred_conan_base is up to date")])
+
                             for req in ed.required_local_lib:
                                 req.print_check_tui(ws.path)
                             for req in ed.required_external_lib:
@@ -282,7 +303,7 @@ class Runner:
 
             start_status_bar('test')
             if self.github_rate:
-                text_item(f" Github rate limit: {self.github_rate.limit - self.github_rate.remaining}/{self.github_rate.limit}", 30)
+                text_item(f" FPS: {real_fps}, Github rate limit: {self.github_rate.limit - self.github_rate.remaining}/{self.github_rate.limit}", 30)
                 text_item(f" ? Shows help, Tab to switch panel, Enter to open workspace, Enter to open root, Enter to open dependency", Percentage(100) - 31)
             end_status_bar()
 
@@ -303,7 +324,30 @@ class Runner:
                 raise SystemExit()
 
             end_frame()
+
+            if self.conan_base_proc:
+                if self.conan_base_proc.poll():
+                    for line in self.conan_base_proc.stdout.readline():
+                        if line:
+                            self.process_conan_base_version_string(line)
+                    self.conan_base_proc = None
+                else:
+                    line = self.conan_base_proc.stdout.readline()
+                    self.process_conan_base_version_string(line)
+
             end = perf_counter()
+
+    def process_conan_base_version_string(self, line):
+        conan_base_match = re.search(self.conan_base_regex, line)
+        if conan_base_match:
+            match_semver = Semver(conan_base_match.group(1))
+
+            if self.conan_base_newest_version is None:
+                self.conan_base_newest_version = match_semver
+
+            if self.conan_base_newest_version < match_semver:
+                self.conan_base_newest_version = match_semver
+
 
     def resolve_conflict_item(self, conflict_ref, ws):
             _, pressed = text_item(f"  {conflict_ref} - {conflict_ref.date}")
@@ -311,7 +355,7 @@ class Runner:
                 self.resolve_conflict(self.editable_list, conflict_ref, ws)
             conflict_ref.fill_date_from_github(self.get_editable_from_ref(conflict_ref), self.thread_pool)
 
-    def log_editable_conflict_resolution(self, editable, conflict_ref, workspace):
+    def log_editable_conflict_resolution(self, editable, conflict_ref):
         self.conflict_log.append([f"Switched {conflict_ref.package.name} to ", (conflict_ref.version, "success"), f" in {editable.package.name}"])
 
     def log_workspace_conflict_resolution(self, conflict_ref, workspace):
@@ -322,7 +366,7 @@ class Runner:
             if workspace.get_dependency_from_package(editable.package):
                 version_changed = editable.change_version(selected_conflict_ref)
                 if version_changed:
-                    self.log_editable_conflict_resolution(editable, selected_conflict_ref, workspace)
+                    self.log_editable_conflict_resolution(editable, selected_conflict_ref)
 
         version_changed = workspace.change_version(selected_conflict_ref)
         if version_changed:
@@ -357,12 +401,23 @@ class Runner:
         self.editable_list = create_editable_from_workspace_list(self.workspaces, self.gh_client, self.thread_pool)
         compute_conflicts(self.workspaces, self.editable_list)
         self.thread_pool.submit(self.check_github_rate)
+        self.load_last_conan_base_version()
 
     def check_github_rate(self):
         while self.running:
             self.wait_check_github = threading.Event()
             self.github_rate = self.gh_client.get_rate_limit().core
             self.wait_check_github.wait(timeout=10.)
+
+    def load_last_conan_base_version(self):
+        conan = shutil.which("conan")
+        # FIX: this needs to be configurable
+        if conan and self.conan_base_newest_version is None:
+            self.conan_base_proc = subprocess.Popen(
+                    [conan, "search", "-r", "adnn", "shred_conan_base"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8")
+        else:
+            pass
 
     def get_editable_from_ref(self, conan_ref) -> Optional[Editable]:
         try:

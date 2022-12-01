@@ -1,8 +1,10 @@
 import ast
 import re
 from git.repo import Repo
+from ratelimit import limits
 
 from sph.conan_ref import ConanRef
+from sph.semver import Semver
 
 class GithubRunStub:
     def __init__(self, status, conclusion, head_sha):
@@ -76,6 +78,11 @@ class Editable:
         self.current_run = None
         self.runs_develop = []
         self.checking_for_workflow = False
+        self.cmake_status = None
+        self.rev_list = None
+        self.is_repo_dirty = None
+        self.conan_base_version = None
+        self.workflows_version = None
 
         remote_url = list(self.repo.remote("origin").urls)[0]
         match = re.search(r"github.com:(.*)/(.*(?=\.g)|.*)", remote_url)
@@ -86,6 +93,44 @@ class Editable:
             self.gh_client = gh_client
 
         self.setup_gh_repo()
+
+    @limits(calls=1, period=0.5, raise_on_limit=False)
+    def update_conan_base_version(self):
+        conan_base_regex = r"python_requires=.*\/(\d+\.\d+\.\d+)@"
+        if self.is_local:
+            with open(self.conan_path.resolve(), "r") as conan_file:
+                for line in conan_file.readlines():
+                    match = re.search(conan_base_regex, line)
+                    if match:
+                        self.conan_base_version = Semver(match.group(1))
+        pass
+
+    @limits(calls=1, period=0.5, raise_on_limit=False)
+    def update_rev_list(self):
+        rev_list_regex = r"(\d)\t(\d)"
+        rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...origin/develop"])
+        self.rev_list = re.search(rev_list_regex, rev_list)
+
+    @limits(calls=1, period=0.5, raise_on_limit=False)
+    def check_repo_dirty(self):
+        self.is_repo_dirty = self.repo.is_dirty()
+
+    @limits(calls=1, period=0.5, raise_on_limit=False)
+    def check_external_status(self):
+        # This needs git config --global status.submoduleSummary true
+        cmake_match = None
+        cmake_submodule_regex = r"cmake (\w+)\.\.\.(\w+) \((\d+)\)"
+        if self.repo.git.config(["--global", "status.submoduleSummary"]) == "true":
+            status = self.repo.git.status()
+            for status_line in status.splitlines():
+                if status_line.startswith("* cmake"):
+                    cmake_match = re.search(cmake_submodule_regex, status_line)
+                    if cmake_match:
+                        self.cmake_status = [(" ", "fail"), f"CMake submodule is {cmake_match.group(3)} commit behind"]
+            if cmake_match is None:
+                    self.cmake_status = [(" ", "success"), f"CMake submodule is up to date"]
+        else:
+            self.cmake_status = [("", "refname"), " Can't check cmake submodule health please use git config --global status.submoduleSummary true"]
 
     def change_version(self, new_dependency, old_dependency=None):
         text = None
@@ -128,7 +173,7 @@ class Editable:
         try:
             self.gh_repo = self.gh_client.get_repo(f"{self.org}/{self.gh_repo_name}")
             return True
-        except Exception as e:
+        except Exception:
             self.gh_repo = False
             return False
         
@@ -159,6 +204,7 @@ class Editable:
             runs_completed = self.gh_repo.get_workflow_runs(
                 branch=self.repo.active_branch.name, status='completed'
             )
+            # FIX: should be able to configure develop name branch
             runs_develop = self.gh_repo.get_workflow_runs(
                 branch="develop", status="completed"
             )
@@ -181,18 +227,16 @@ class Editable:
 
             self.checking_for_workflow = False
 
-            if self.current_run is None:
-                self.current_run = False
-        except Exception as e:
+        except Exception:
             self.checking_for_workflow = False
-            self.current_run = False
+            self.current_run = None
 
     def check_workflow_wrapper(self, force=False):
         def wrapped():
             self.checking_workflow_task(force)
         return wrapped
 
-    def check_workflow_cb(self, f):
+    def check_workflow_cb(self, _):
         self.check_workflow(False)
 
     def check_workflow(self, force):

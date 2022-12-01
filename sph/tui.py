@@ -132,6 +132,7 @@ class Runner:
                                     _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "path"))
 
                                     if pressed:
+                                        self.ref_from_runs = []
                                         self.selected_ref_with_editable = (ref, root_editable, ws)
                                         self.hovered_root = None
                                 for ref in root_editable.required_external_lib:
@@ -140,6 +141,7 @@ class Runner:
                                     _, pressed = text_item((f"  {symbol} {ref.ref}", "fail" if conflict else "refname"))
 
                                     if pressed:
+                                        self.ref_from_runs = []
                                         self.selected_ref_with_editable = (ref, root_editable, ws)
                                         self.hovered_root = None
             end_panel()

@@ -1,6 +1,6 @@
 import os
 import shutil
-import io
+import re
 import subprocess
 from time import perf_counter
 import threading
@@ -55,6 +55,8 @@ class Runner:
         self.proc_output = None
         self.ref_from_runs = []
         self.id_selected_before_help = ""
+        self.git_repo_for_diff = None
+        self.git_diff = ""
 
         #Thread event
         self.wait_check_github = None
@@ -71,8 +73,7 @@ class Runner:
         fps = [0.] * 100
         start = 0
         end = 1
-        git_diff = ""
-        git_hovered = False
+        rev_list_regex = r"(\d)\t(\d)"
 
         while self.running:
             fps[frame_count % 100] = 1.0 / (end - start)
@@ -167,22 +168,35 @@ class Runner:
                     for ref in root_editable.required_local_lib:
                         editables.append(self.get_editable_from_ref(ref))
 
-                    root_check_id = start_panel(f"{ref.package.name} check", Percentage(80) if not git_hovered else Percentage(39), Percentage(100))
-                    git_hovered = False
-                    git_repo_dir = ""
+                    root_check_id = start_panel(f"{ref.package.name} check", Percentage(80) if not self.git_repo_for_diff else Percentage(39), Percentage(100))
+                    self.git_repo_for_diff = None
                     for ed in editables:
+                        ahead = 0
+                        behind = 0
+                        ci_status_string = ""
                         if ed and ed.is_local:
                             text_item([(f"{ed.package.name}", "refname"), " at ", (f"{ed.conan_path.parents[1]}", "path")])
                             if ed.repo.is_dirty():
                                 git_hovered_temp, _ = text_item([(" ", "fail"), ("Repo is dirty")])
                                 if git_hovered_temp:
-                                    git_hovered = git_hovered_temp
-                                    git_repo_dir = ed.repo.working_dir
+                                    self.git_repo_for_diff = ed.repo
                             else:
-                                text_item([(" ", "success"), ("Repo is clean")])
+                                rev_list = ed.repo.git.rev_list(["--left-right", "--count", f"{ed.repo.active_branch}...origin/develop"])
+                                rev_matches = re.match(rev_list_regex, rev_list)
+                                rev_string = ""
+                                if rev_matches:
+                                    ahead = rev_matches.group(1)
+                                    behind = rev_matches.group(2)
+                                
+                                    if int(ahead) != 0 or int(behind) != 0:
+                                        rev_string = f" ↑{ahead}↓{behind}"
+                                    if int(ahead) != 0:
+                                        ci_status_string = f" but {ahead} commit behind behind local repo"
+
+                                text_item([(" ", "success"), ("Repo is clean"), rev_string])
                                 if ed.current_run and ed.current_run.status == "completed":
                                     if ed.current_run.conclusion == "success":
-                                        text_item([(" ", "success"), ("CI success")])
+                                        text_item([(" ", "success"), ("CI success"), ci_status_string])
                                     else:
                                         text_item([(" ", "fail"), ("CI failure")])
                                 if ed.current_run and ed.current_run.status == "in_progress":
@@ -195,13 +209,13 @@ class Runner:
                             text_item("")
                     end_panel()
 
-                    if git_diff != "":
-                        text_buffer('Git diff', Percentage(41), Percentage(100), git_diff)
+                    if self.git_diff != "":
+                        text_buffer('Git diff', Percentage(41), Percentage(100), self.git_diff)
 
-                    if git_hovered and git_diff == "":
-                        git_diff = Git(git_repo_dir).diff()
-                    elif not git_hovered:
-                        git_diff = ""
+                    if self.git_repo_for_diff and self.git_diff == "":
+                        self.git_diff = self.git_repo_for_diff.git.diff()
+                    elif self.git_repo_for_diff is None:
+                        self.git_diff = ""
 
                     if root_check_id == selected_id() and is_key_pressed(KEY_ESCAPE):
                         set_selected_id(workspace_id)

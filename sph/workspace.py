@@ -44,7 +44,9 @@ class Workspace:
         newtext = None
         regex = r''
         if old_dependency is None:
-            regex = r"{}\/[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
+            # matches a conan string reference of new_dependency
+            # but does not match new_dependency/conan
+            regex = r"{}\/(?!conan)[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
         else:
             regex = re.escape(old_dependency)
 

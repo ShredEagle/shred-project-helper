@@ -50,7 +50,7 @@ class Workspace:
         else:
             regex = re.escape(old_dependency)
 
-        with open(self.path, "rU") as conanfile:
+        with open(self.path, "r", newline="") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.path, "w") as resolvedfile:

@@ -143,7 +143,7 @@ class Editable:
         else:
             regex = re.escape(old_dependency)
 
-        with open(self.conan_path, "rU") as conanfile:
+        with open(self.conan_path, "r", newline="") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
         with open(self.conan_path, "w") as resolvedfile:

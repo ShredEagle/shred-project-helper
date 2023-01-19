@@ -225,7 +225,7 @@ class Runner:
                                 text_item([(" ", "success"), (f"shred_conan_base is up to date")])
 
                             for req in ed.required_local_lib:
-                                req.print_check_tui(ws.path)
+                                req.print_check_tui(ws.path, self.get_editable_from_ref(req))
                             for req in ed.required_external_lib:
                                 req.print_check_tui(ws.path)
 

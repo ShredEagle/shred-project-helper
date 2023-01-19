@@ -10,7 +10,7 @@ def delete_term_n_previous_line(n):
         click.get_text_stream('stdout').write('\033[A\r\033[K')
 
 def extract_info_from_conan_ref(conan_ref):
-    match = re.search(r'(\w+)\/([^@]+)(@(\w+)\/(\w+)#?(\w+)?)?', conan_ref)
+    match = re.search(r'([\w\.]+)\/([^@]+)(@(\w+)\/(\w+)#?(\w+)?)?', conan_ref)
     if len(match.groups()) == 3:
         return (
             match.group(1),

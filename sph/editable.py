@@ -108,7 +108,7 @@ class Editable:
     @limits(calls=1, period=0.5, raise_on_limit=False)
     def update_rev_list(self):
         rev_list_regex = r"(\d)\t(\d)"
-        rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...origin/develop"])
+        rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}"])
         self.rev_list = re.search(rev_list_regex, rev_list)
 
     @limits(calls=1, period=0.5, raise_on_limit=False)

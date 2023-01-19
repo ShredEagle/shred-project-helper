@@ -71,11 +71,18 @@ class ConanRef:
             ret = f"{t(level)}{self.ref} is ok"
             Halo(ret).succeed()
 
-    def print_check_tui(self, workspace_path):
+    def print_check_tui(self, workspace_path, editable=None):
         if workspace_path in self.conflicts and len(self.conflicts[workspace_path]) > 0:
             conflicts = ""
             for c in self.conflicts[workspace_path]:
                 conflicts += f"{c} "
             text_item([(" ", "fail"), f"{self.ref} conflicts with ", (conflicts, "fail")])
         else:
-            text_item([(" ", "success"), f"{self.ref} is ok"])
+            if editable is not None and len(editable.runs_develop) > 0:
+                last_run_ref_sha = editable.runs_develop[0].head_sha[0:10]
+                if last_run_ref_sha != self.version:
+                    text_item([(" ", "refname"), f"{self.ref} is ok but not last deployed version"])
+                else:
+                    text_item([(" ", "success"), f"{self.ref} is ok"])
+            else:
+                text_item([(" ", "success"), f"{self.ref} is ok"])

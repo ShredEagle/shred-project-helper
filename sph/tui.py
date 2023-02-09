@@ -219,7 +219,7 @@ class Runner:
                                     text_item("CI in progress")
 
                             ed.update_conan_base_version()
-                            if ed.conan_base_version and ed.conan_base_version < self.conan_base_newest_version:
+                            if self.conan_base_newest_version is None or (ed.conan_base_version and ed.conan_base_version < self.conan_base_newest_version):
                                 text_item([(" ", "fail"), (f"shred_conan_base is not up to date (local={ed.conan_base_version}, adnn={self.conan_base_newest_version})")])
                             else:
                                 text_item([(" ", "success"), (f"shred_conan_base is up to date")])

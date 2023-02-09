@@ -8,8 +8,6 @@ def configCreate():
     config = ConfigParser()
 
     if not os.path.exists(config_path):
-        click.echo('⚙ Creating config')
-        click.echo()
         config['github'] = {'access_token': ''}
         os.mkdir(xdg_config_home() / 'shred-project-helper')
         with open(config_path, 'w+') as config_file:
@@ -20,9 +18,7 @@ def configCreate():
     return (config, config_path)
 
 def configSaveToken(config, path, github_token):
-    save_token = click.confirm('Save access token to config?')
-    if save_token:
-        config['github']['access_token'] = github_token
-        with open(path, 'w+') as config_file:
-            config.write(config_file)
+    config['github']['access_token'] = github_token
+    with open(path, 'w+') as config_file:
+        config.write(config_file)
 

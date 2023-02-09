@@ -1,5 +1,6 @@
 import ast
 import re
+from git import GitCommandError
 from git.repo import Repo
 from ratelimit import limits
 
@@ -94,7 +95,7 @@ class Editable:
 
         self.setup_gh_repo()
 
-    @limits(calls=1, period=0.5, raise_on_limit=False)
+    @limits(calls=1, period=4, raise_on_limit=False)
     def update_conan_base_version(self):
         conan_base_regex = r"python_requires=.*\/(\d+\.\d+\.\d+)@"
         if self.is_local:
@@ -105,32 +106,39 @@ class Editable:
                         self.conan_base_version = Semver(match.group(1))
         pass
 
-    @limits(calls=1, period=0.5, raise_on_limit=False)
+    @limits(calls=1, period=4, raise_on_limit=False)
     def update_rev_list(self):
         rev_list_regex = r"(\d)\t(\d)"
         rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}"])
         self.rev_list = re.search(rev_list_regex, rev_list)
 
-    @limits(calls=1, period=0.5, raise_on_limit=False)
+    @limits(calls=1, period=4, raise_on_limit=False)
     def check_repo_dirty(self):
-        self.is_repo_dirty = self.repo.is_dirty()
+        try:
+            self.is_repo_dirty = self.repo.is_dirty()
+        except GitCommandError:
+            return
 
-    @limits(calls=1, period=0.5, raise_on_limit=False)
+    @limits(calls=1, period=4, raise_on_limit=False)
     def check_external_status(self):
         # This needs git config --global status.submoduleSummary true
         cmake_match = None
         cmake_submodule_regex = r"cmake (\w+)\.\.\.(\w+) \((\d+)\)"
-        if self.repo.git.config(["--global", "status.submoduleSummary"]) == "true":
-            status = self.repo.git.status()
-            for status_line in status.splitlines():
-                if status_line.startswith("* cmake"):
-                    cmake_match = re.search(cmake_submodule_regex, status_line)
-                    if cmake_match:
-                        self.cmake_status = [(" ", "fail"), f"CMake submodule is {cmake_match.group(3)} commit behind"]
-            if cmake_match is None:
-                    self.cmake_status = [(" ", "success"), f"CMake submodule is up to date"]
-        else:
+        try:
+            if self.repo.git.config(["--global", "status.submoduleSummary"]) == "true":
+                status = self.repo.git.status()
+                for status_line in status.splitlines():
+                    if status_line.startswith("* cmake"):
+                        cmake_match = re.search(cmake_submodule_regex, status_line)
+                        if cmake_match:
+                            self.cmake_status = [(" ", "fail"), f"CMake submodule is {cmake_match.group(3)} commit behind"]
+                if cmake_match is None:
+                        self.cmake_status = [(" ", "success"), f"CMake submodule is up to date"]
+            else:
+                self.cmake_status = [("", "refname"), " Can't check cmake submodule health please use git config --global status.submoduleSummary true"]
+        except GitCommandError:
             self.cmake_status = [("", "refname"), " Can't check cmake submodule health please use git config --global status.submoduleSummary true"]
+
 
     def change_version(self, new_dependency, old_dependency=None):
         text = None
@@ -146,7 +154,7 @@ class Editable:
         with open(self.conan_path, "r", newline="") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
-        with open(self.conan_path, "w") as resolvedfile:
+        with open(self.conan_path, "w", newline="") as resolvedfile:
             resolvedfile.write(newtext)
 
         if newtext != text:

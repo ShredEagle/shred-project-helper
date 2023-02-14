@@ -53,7 +53,7 @@ class Workspace:
         with open(self.path, "r", newline="") as conanfile:
             text = conanfile.read()
             newtext = re.sub(regex, new_dependency.ref, text)
-        with open(self.path, "w") as resolvedfile:
+        with open(self.path, "w", newline="") as resolvedfile:
             resolvedfile.write(newtext)
 
         if text != newtext:

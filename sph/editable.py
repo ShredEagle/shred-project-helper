@@ -1,8 +1,8 @@
 import ast
+from datetime import datetime
 import re
 from git import GitCommandError
 from git.repo import Repo
-from ratelimit import limits
 
 from sph.conan_ref import ConanRef
 from sph.semver import Semver
@@ -40,7 +40,7 @@ def create_editable_dependency(editable, editables):
                     )
 
 
-def create_editable_from_workspace_list(workspaces, github_client=None, thread_pool=None):
+def create_editable_from_workspace_list(workspaces, github_client=None, worker=None):
     editable_list = []
     package_set = set()
 
@@ -52,7 +52,7 @@ def create_editable_from_workspace_list(workspaces, github_client=None, thread_p
         if project_conan_path.exists() and conan_ref.package not in package_set:
             conan_ref.has_local_editable = True
             package_set.add(conan_ref.package)
-            editable_list.append(Editable(conan_ref.package, project_conan_path, github_client, thread_pool))
+            editable_list.append(Editable(conan_ref.package, project_conan_path, github_client, worker))
         else:
             conan_ref.has_local_editable = False
 
@@ -62,8 +62,9 @@ def create_editable_from_workspace_list(workspaces, github_client=None, thread_p
     return editable_list
 
 class Editable:
-    def __init__(self, conan_package, conan_path, gh_client, thread_pool):
-        self.thread_pool = thread_pool
+    def __init__(self, conan_package, conan_path, gh_client, worker):
+        self.last_workflow_call = None
+        self.worker = worker
         self.package = conan_package
         # FIX: This assume the name of the conanfile
         self.conan_path = (conan_path / "conanfile.py" if "conanfile.py" not in str(conan_path) else conan_path).resolve()
@@ -95,7 +96,6 @@ class Editable:
 
         self.setup_gh_repo()
 
-    @limits(calls=1, period=4, raise_on_limit=False)
     def update_conan_base_version(self):
         conan_base_regex = r"python_requires=.*\/(\d+\.\d+\.\d+)@"
         if self.is_local:
@@ -106,20 +106,17 @@ class Editable:
                         self.conan_base_version = Semver(match.group(1))
         pass
 
-    @limits(calls=1, period=4, raise_on_limit=False)
     def update_rev_list(self):
         rev_list_regex = r"(\d)\t(\d)"
         rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}"])
         self.rev_list = re.search(rev_list_regex, rev_list)
 
-    @limits(calls=1, period=4, raise_on_limit=False)
     def check_repo_dirty(self):
         try:
             self.is_repo_dirty = self.repo.is_dirty()
-        except GitCommandError:
+        except Exception:
             return
 
-    @limits(calls=1, period=4, raise_on_limit=False)
     def check_external_status(self):
         # This needs git config --global status.submoduleSummary true
         cmake_match = None
@@ -188,9 +185,8 @@ class Editable:
             return False
         
     def setup_gh_repo(self):
-        if self.gh_repo_name and self.thread_pool:
-            f = self.thread_pool.submit(self.setup_gh_repo_task)
-            f.add_done_callback(self.check_workflow_cb)
+        if self.gh_repo_name and self.worker:
+             self.worker.push_work(f"{self.package}gh_repo_task", self.setup_gh_repo_task)
         else:
             self.setup_gh_repo_task()
     
@@ -198,11 +194,16 @@ class Editable:
        return next(filter(lambda x: x.package == package, self.required_external_lib + self.required_local_lib))
 
     def checking_workflow_task(self, force=False):
-        if self.current_run and not force:
+        now = datetime.now()
+        if self.last_workflow_call and now - self.last_workflow_call < datetime.timedelta(seconds=20):
             return self.current_run
 
+        if self.current_run and not force:
+            return self.current_run
+        
+        self.last_workflow_call = now
+
         self.checking_for_workflow = True
-        self.current_run = None
 
         try:
             runs_queued = self.gh_repo.get_workflow_runs(
@@ -251,4 +252,4 @@ class Editable:
 
     def check_workflow(self, force):
         if self.gh_repo and not self.checking_for_workflow:
-            self.thread_pool.submit(self.check_workflow_wrapper(force))
+            self.worker.push_work(f"{self.package}check_workflow", self.check_workflow_wrapper(force))

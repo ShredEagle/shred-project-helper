@@ -43,10 +43,10 @@ class ConanRef:
     def __hash__(self):
         return self.ref.__hash__()
 
-    def fill_date_from_github(self, editable, thread_pool):
+    def fill_date_from_github(self, editable, worker):
         if self.date is None:
             self.date = "Waiting for date"
-            thread_pool.submit(self.fill_date_from_github_task(editable))
+            worker.push_work(f"{self}fill_date_from_github",self.fill_date_from_github_task(editable))
 
     def fill_date_from_github_task(self, editable):
         def task():

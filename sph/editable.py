@@ -1,17 +1,21 @@
 import ast
-from datetime import datetime
 import re
+from datetime import datetime, timedelta
+
 from git import GitCommandError
 from git.repo import Repo
+from ratelimit import limits
 
 from sph.conan_ref import ConanRef
 from sph.semver import Semver
+
 
 class GithubRunStub:
     def __init__(self, status, conclusion, head_sha):
         self.status = status
         self.conclusion = conclusion
         self.head_sha = head_sha
+
 
 def create_editable_dependency(editable, editables):
     all_required_lib = []
@@ -31,16 +35,16 @@ def create_editable_dependency(editable, editables):
             dep_name = dep.split("/")[0]
             if dep_name != editable.package.name:
                 if dep_name in [x.package.name for x in editables]:
-                    dep_editable = next(x for x in editables if x.package.name == dep_name)
+                    dep_editable = next(
+                        x for x in editables if x.package.name == dep_name
+                    )
                     if dep_editable is not None:
                         editable.required_local_lib.append(ConanRef(dep))
                 else:
-                    editable.required_external_lib.append(
-                        ConanRef(dep)
-                    )
+                    editable.required_external_lib.append(ConanRef(dep))
 
 
-def create_editable_from_workspace_list(workspaces, github_client=None, worker=None):
+def create_editable_from_workspace_list(workspaces, github_client=None):
     editable_list = []
     package_set = set()
 
@@ -52,7 +56,9 @@ def create_editable_from_workspace_list(workspaces, github_client=None, worker=N
         if project_conan_path.exists() and conan_ref.package not in package_set:
             conan_ref.has_local_editable = True
             package_set.add(conan_ref.package)
-            editable_list.append(Editable(conan_ref.package, project_conan_path, github_client, worker))
+            editable_list.append(
+                Editable(conan_ref.package, project_conan_path, github_client)
+            )
         else:
             conan_ref.has_local_editable = False
 
@@ -61,13 +67,17 @@ def create_editable_from_workspace_list(workspaces, github_client=None, worker=N
 
     return editable_list
 
+
 class Editable:
-    def __init__(self, conan_package, conan_path, gh_client, worker):
+    def __init__(self, conan_package, conan_path, gh_client):
         self.last_workflow_call = None
-        self.worker = worker
         self.package = conan_package
         # FIX: This assume the name of the conanfile
-        self.conan_path = (conan_path / "conanfile.py" if "conanfile.py" not in str(conan_path) else conan_path).resolve()
+        self.conan_path = (
+            conan_path / "conanfile.py"
+            if "conanfile.py" not in str(conan_path)
+            else conan_path
+        ).resolve()
         self.is_local = self.conan_path.exists()
         if self.is_local:
             # FIX: This assume the position of the git repository
@@ -108,7 +118,13 @@ class Editable:
 
     def update_rev_list(self):
         rev_list_regex = r"(\d)\t(\d)"
-        rev_list = self.repo.git.rev_list(["--left-right", "--count", f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}"])
+        rev_list = self.repo.git.rev_list(
+            [
+                "--left-right",
+                "--count",
+                f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}",
+            ]
+        )
         self.rev_list = re.search(rev_list_regex, rev_list)
 
     def check_repo_dirty(self):
@@ -128,23 +144,36 @@ class Editable:
                     if status_line.startswith("* cmake"):
                         cmake_match = re.search(cmake_submodule_regex, status_line)
                         if cmake_match:
-                            self.cmake_status = [(" ", "fail"), f"CMake submodule is {cmake_match.group(3)} commit behind"]
+                            self.cmake_status = [
+                                (" ", "fail"),
+                                f"CMake submodule is {cmake_match.group(3)} commit behind",
+                            ]
                 if cmake_match is None:
-                        self.cmake_status = [(" ", "success"), f"CMake submodule is up to date"]
+                    self.cmake_status = [
+                        (" ", "success"),
+                        f"CMake submodule is up to date",
+                    ]
             else:
-                self.cmake_status = [("", "refname"), " Can't check cmake submodule health please use git config --global status.submoduleSummary true"]
+                self.cmake_status = [
+                    ("", "refname"),
+                    " Can't check cmake submodule health please use git config --global status.submoduleSummary true",
+                ]
         except GitCommandError:
-            self.cmake_status = [("", "refname"), " Can't check cmake submodule health please use git config --global status.submoduleSummary true"]
-
+            self.cmake_status = [
+                ("", "refname"),
+                " Can't check cmake submodule health please use git config --global status.submoduleSummary true",
+            ]
 
     def change_version(self, new_dependency, old_dependency=None):
         text = None
         newtext = None
-        regex = r''
+        regex = r""
         if old_dependency is None:
             # matches a conan string reference of new_dependency
             # but does not match new_dependency/conan
-            regex = r"{}\/(?!conan)[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
+            regex = r"{}\/(?!conan)[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(
+                re.escape(new_dependency.package.name)
+            )
         else:
             regex = re.escape(old_dependency)
 
@@ -173,47 +202,43 @@ class Editable:
 
         return False
 
-    def setup_gh_repo_task(self):
+    def setup_gh_repo(self):
         if self.gh_repo:
             return True
-
         try:
             self.gh_repo = self.gh_client.get_repo(f"{self.org}/{self.gh_repo_name}")
             return True
         except Exception:
             self.gh_repo = False
             return False
-        
-    def setup_gh_repo(self):
-        if self.gh_repo_name and self.worker:
-             self.worker.push_work(f"{self.package}gh_repo_task", self.setup_gh_repo_task)
-        else:
-            self.setup_gh_repo_task()
-    
+
     def get_dependency_from_package(self, package):
-       return next(filter(lambda x: x.package == package, self.required_external_lib + self.required_local_lib))
+        return next(
+            filter(
+                lambda x: x.package == package,
+                self.required_external_lib + self.required_local_lib,
+            )
+        )
 
-    def checking_workflow_task(self, force=False):
+    @limits(calls=15, period=60, raise_on_limit=False)
+    def check_workflow(self):
         now = datetime.now()
-        if self.last_workflow_call and now - self.last_workflow_call < datetime.timedelta(seconds=20):
+        if self.last_workflow_call and now - self.last_workflow_call < timedelta(
+            seconds=20
+        ):
             return self.current_run
 
-        if self.current_run and not force:
-            return self.current_run
-        
         self.last_workflow_call = now
-
-        self.checking_for_workflow = True
 
         try:
             runs_queued = self.gh_repo.get_workflow_runs(
-                branch=self.repo.active_branch.name, status='queued'
+                branch=self.repo.active_branch.name, status="queued"
             )
             runs_in_progress = self.gh_repo.get_workflow_runs(
-                branch=self.repo.active_branch.name, status='in_progress'
+                branch=self.repo.active_branch.name, status="in_progress"
             )
             runs_completed = self.gh_repo.get_workflow_runs(
-                branch=self.repo.active_branch.name, status='completed'
+                branch=self.repo.active_branch.name, status="completed"
             )
             # FIX: should be able to configure develop name branch
             runs_develop = self.gh_repo.get_workflow_runs(
@@ -221,35 +246,19 @@ class Editable:
             )
             if (
                 runs_queued.totalCount > 0
-                or runs_in_progress.totalCount > 0 or runs_completed.totalCount > 0
+                or runs_in_progress.totalCount > 0
+                or runs_completed.totalCount > 0
             ):
                 for run in (
-                        list(runs_queued)
-                        + list(runs_in_progress) + list(runs_completed)
+                    list(runs_queued) + list(runs_in_progress) + list(runs_completed)
                 ):
                     if run.head_sha == self.repo.head.commit.hexsha:
                         self.current_run = run
 
             for run in runs_develop[0:10]:
-                self.runs_develop.append(GithubRunStub(
-                    run.status,
-                    run.conclusion,
-                    run.head_sha))
-
-            self.checking_for_workflow = False
+                self.runs_develop.append(
+                    GithubRunStub(run.status, run.conclusion, run.head_sha)
+                )
 
         except Exception:
-            self.checking_for_workflow = False
             self.current_run = None
-
-    def check_workflow_wrapper(self, force=False):
-        def wrapped():
-            self.checking_workflow_task(force)
-        return wrapped
-
-    def check_workflow_cb(self, _):
-        self.check_workflow(False)
-
-    def check_workflow(self, force):
-        if self.gh_repo and not self.checking_for_workflow:
-            self.worker.push_work(f"{self.package}check_workflow", self.check_workflow_wrapper(force))

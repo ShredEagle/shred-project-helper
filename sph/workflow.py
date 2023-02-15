@@ -1,8 +1,9 @@
 # Allows to bump all reusable workflows versions
 
-import click
-import re, os
+import os
+import re
 
+import click
 
 regex_read = "uses: (shredeagle/reusable-workflows)/\.github/workflows/(?P<workflow>.+\.yml)@(?P<version>.+)"
 regex_substitute = "@.+"
@@ -25,7 +26,11 @@ def print_version(file):
         for line in f.readlines():
             m = re.search(regex_read, line)
             if m:
-                print("{}:\tWorkflow {} is version {}".format(os.path.basename(file), m["workflow"], m["version"]))
+                print(
+                    "{}:\tWorkflow {} is version {}".format(
+                        os.path.basename(file), m["workflow"], m["version"]
+                    )
+                )
 
 
 def walk_workflows(repo, callback, *args):
@@ -39,20 +44,20 @@ def walk_workflows(repo, callback, *args):
             callback(file, *args)
 
 
-@click.command(name = "setv")
+@click.command(name="setv")
 @click.argument("version")
-@click.option("--repo", default = ".", help = "The repository containings workflows.")
+@click.option("--repo", default=".", help="The repository containings workflows.")
 def set_workflow_version(version, repo):
     walk_workflows(repo, substitute_version, version)
 
 
-@click.command(name = "list")
-@click.option("--repo", default = ".", help = "The repository containings workflows.")
+@click.command(name="list")
+@click.option("--repo", default=".", help="The repository containings workflows.")
 def get_workflow_version(repo):
     walk_workflows(repo, print_version)
 
 
-@click.group(name = "workflow")
+@click.group(name="workflow")
 def workflow_group():
     pass
 

@@ -1,4 +1,3 @@
-import click
 import os
 from configparser import ConfigParser
 from xdg import xdg_config_home

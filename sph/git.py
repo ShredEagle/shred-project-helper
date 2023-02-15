@@ -1,3 +1,4 @@
+# TODO: take what's interesting and trash the rest
 import click
 from colorama import Fore
 from github import GithubException

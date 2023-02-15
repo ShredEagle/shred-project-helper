@@ -1,15 +1,14 @@
-from pathlib import Path
 import re
-from typing_extensions import Any
+from pathlib import Path
 
 import click
 import yaml
 
 from sph.conan_ref import ConanRef
 
+
 class Workspace:
     def __init__(self, workspace):
-
         self.local_refs = []
         self.path = Path(workspace)
         if not self.path.is_file():
@@ -17,7 +16,7 @@ class Workspace:
         self.folder_path = self.path.parents[0]
 
         try:
-            with open(self.path.resolve(), "r") as workspace_file:
+            with open(self.path.resolve(), "r", encoding="utf-8") as workspace_file:
                 try:
                     self.data = yaml.full_load(workspace_file)
                 except yaml.YAMLError as exc:
@@ -37,16 +36,20 @@ class Workspace:
         self.root = [ConanRef(root) for root in root_data]
 
         for ref, path in self.data["editables"].items():
-            self.local_refs.append((ConanRef(ref), self.folder_path / Path(path["path"])))
+            self.local_refs.append(
+                (ConanRef(ref), self.folder_path / Path(path["path"]))
+            )
 
     def change_version(self, new_dependency, old_dependency=None):
         text = None
         newtext = None
-        regex = r''
+        regex = r""
         if old_dependency is None:
             # matches a conan string reference of new_dependency
             # but does not match new_dependency/conan
-            regex = r"{}\/(?!conan)[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(re.escape(new_dependency.package.name))
+            regex = r"{}\/(?!conan)[\w\.]+(@[\w]+\/[\w]+(#[\w])?)?".format(
+                re.escape(new_dependency.package.name)
+            )
         else:
             regex = re.escape(old_dependency)
 
@@ -57,7 +60,11 @@ class Workspace:
             resolvedfile.write(newtext)
 
         if text != newtext:
-            ref_to_change = next(x for x, p in self.local_refs if x.package.name == new_dependency.package.name)
+            ref_to_change = next(
+                x
+                for x, p in self.local_refs
+                if x.package.name == new_dependency.package.name
+            )
             ref_to_change.version = new_dependency.version
             ref_to_change.user = new_dependency.user
             ref_to_change.channel = new_dependency.channel

@@ -9,7 +9,8 @@ from sph.conan_ref import ConanRef
 
 class Workspace:
     def __init__(self, workspace):
-        self.local_refs = []
+        self.editable_path_list = []
+        self.conan_ref_list = []
         self.path = Path(workspace)
         if not self.path.is_file():
             self.path = self.path / "workspace.yml"
@@ -36,8 +37,9 @@ class Workspace:
         self.root = [ConanRef(root) for root in root_data]
 
         for ref, path in self.data["editables"].items():
-            self.local_refs.append(
-                (ConanRef(ref), self.folder_path / Path(path["path"]))
+            self.conan_ref_list.append(ConanRef(ref))
+            self.editable_path_list.append(
+                self.folder_path / Path(path["path"])
             )
 
     def change_version(self, new_dependency, old_dependency=None):
@@ -62,7 +64,7 @@ class Workspace:
         if text != newtext:
             ref_to_change = next(
                 x
-                for x, p in self.local_refs
+                for x in self.conan_ref_list
                 if x.package.name == new_dependency.package.name
             )
             ref_to_change.version = new_dependency.version
@@ -84,7 +86,7 @@ class Workspace:
 
     def get_dependency_from_package(self, package):
         try:
-            return next(filter(lambda x: x[0].package == package, self.local_refs))[0]
+            return next(filter(lambda x: x.package == package, self.conan_ref_list))
         except StopIteration:
             return None
 

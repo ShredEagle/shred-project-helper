@@ -1,23 +1,40 @@
 import re
 
-from ratelimit import limits
-from github import GithubException
-from witchtui.widgets import text_item
-
 from sph.conan_package import ConanPackage
+from sph.errors import RegexpFormatException
+from witchtui.widgets import text_item
 
 
 class ConanRef:
-    def __init__(self, ref):
+    def __init__(self, ref, package=None, date=None):
         name, version, user, channel, revision = self.extract_info_from_conan_ref(ref)
-        self.package = ConanPackage(name)
+        self.package = package if package else ConanPackage(name)
         self.version = version
         self.user = user
         self.channel = channel
         self.revision = revision
         self.conflicts = {}
-        self.date = None
-        self.has_local_editable = False
+        self._commit_date = date
+
+    @property
+    def has_local_editable(self):
+        return self.package.editable and self.package.editable.is_in_filesystem
+
+    @property
+    def commit_date(self):
+        if self._commit_date:
+            return self._commit_date
+        else:
+            editable = self.package.editable
+            if editable.is_in_filesystem:
+                for run in editable.succesful_develop_runs:
+                    if run.head_sha[0:10] == self.version:
+                        self._commit_date = run.date.strftime("%Y/%m/%d %H:%M:%S")
+                        return self._commit_date
+                if len(editable.succesful_develop_runs) == 0:
+                    return "Waiting for github runs..."
+            else:
+                return "Can't get date for non local editable"
 
     @property
     def ref(self):
@@ -53,9 +70,9 @@ class ConanRef:
                 match.group(6),
             )
 
-        raise Exception(
-            f"Could not read {ref} with our current regexp please file a an" +
-            "issue with the conan ref at https://github.com/ShredEagle/shred-project-helper/issues"
+        raise RegexpFormatException(
+            f"Could not read {ref} with our current regexp please file a an"
+            + "issue with the conan ref at https://github.com/ShredEagle/shred-project-helper/issues"
         )
 
     def __eq__(self, other):
@@ -67,37 +84,24 @@ class ConanRef:
     def __hash__(self):
         return self.ref.__hash__()
 
-    @limits(calls=10, period=10, raise_on_limit=False)
-    def fill_date_from_github(self, editable):
-        if self.date is None:
-            self.date = "Waiting for date"
-            match = re.search(r"/([\w]{10})", self.ref)
-
-            if match:
-                if editable.gh_repo is not None and editable.gh_repo is not False:
-                    try:
-                        commit = editable.gh_repo.get_commit(match.group(1)).commit
-                        self.date = commit.author.date.strftime("%Y/%m/%d %H:%M:%S")
-                    except GithubException:
-                        self.date = f"No commit found for SHA {match.group(1)}"
-
-
     def print_check_tui(self, workspace_path, editable=None):
         if workspace_path in self.conflicts and len(self.conflicts[workspace_path]) > 0:
             conflicts = ""
-            conflicts = str.join(self.conflicts[workspace_path], " ")
+            conflicts = " ".join(
+                [str(conflict) for conflict in self.conflicts[workspace_path]]
+            )
             text_item(
                 [(" ", "fail"), f"{self.ref} conflicts with ", (conflicts, "fail")]
             )
         else:
-            if editable is not None and len(editable.runs_develop) > 0:
-                last_run_ref_sha = editable.runs_develop[0].head_sha[0:10]
-                if last_run_ref_sha != self.version:
-                    text_item(
-                        [
-                            (" ", "refname"),
-                            f"{self.ref} is ok but not last deployed version",
-                        ]
-                    )
-                    return
+            # if editable is not None and len(editable.runs_develop) > 0:
+            #     last_run_ref_sha = editable.runs_develop[0].head_sha[0:10]
+            #     if last_run_ref_sha != self.version:
+            #         text_item(
+            #             [
+            #                 (" ", "refname"),
+            #                 f"{self.ref} is ok but not last deployed version",
+            #             ]
+            #         )
+            #         return
             text_item([(" ", "success"), f"{self.ref} is ok"])

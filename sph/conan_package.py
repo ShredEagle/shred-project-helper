@@ -1,8 +1,9 @@
 class ConanPackage:
     name: str
 
-    def __init__(self, name):
+    def __init__(self, name, editable=None):
         self.name = name
+        self.editable = editable
 
     def __eq__(self, other):
         return hasattr(other, 'name') and self.name == other.name

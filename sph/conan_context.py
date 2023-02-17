@@ -6,16 +6,16 @@ import re
 import shutil
 import subprocess
 import threading
-from pathlib import Path
 from contextlib import suppress
+from pathlib import Path
 
 import aiohttp
 from dateutil.parser import isoparse
-from sph.conan_package import ConanPackage
 
+from sph.conan_package import ConanPackage
 from sph.conan_ref import ConanRef
 from sph.editable import Editable
-from sph.errors import EditableNotInFilesystem
+from sph.errors import EditableNotInFilesystem, NoEditableException
 from sph.semver import Semver
 from sph.workspace import Workspace
 
@@ -23,9 +23,13 @@ GITHUB_REPO_WORKFLOW_RUN_URL = "https://api.github.com/repos/{owner}/{repo}/acti
 
 GITHUB_RATE_URL = "https://api.github.com/rate_limit"
 
+GITHUB_SAFETY_FACTOR = 0.8
+
+
 class Default(dict):
     def __missing__(self, key):
         return ""
+
 
 class GithubRunStub:
     def __init__(self, status, conclusion, head_sha, date):
@@ -48,6 +52,8 @@ class ConanContext:
 
         self.package_dict = {}
         self.create_package_set()
+        if (len(self.package_dict) == 0):
+            raise NoEditableException("There is no editable so there is nothing to do")
 
         for workspace in self.workspace_list:
             for conan_ref in workspace.conan_ref_list:
@@ -77,7 +83,6 @@ class ConanContext:
         """Retrieves the editable list from the package_set"""
         return [package.editable for package in self.package_dict.values()]
 
-
     def stop_context(self):
         """Stops the async tasks in the context_loop"""
         for task in asyncio.all_tasks(self.context_loop):
@@ -89,7 +94,9 @@ class ConanContext:
         try:
             asyncio.ensure_future(self.data_fetch_loop(), loop=self.context_loop)
             asyncio.ensure_future(self.remote_data_fetch_loop(), loop=self.context_loop)
-            self.context_loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(self.context_loop)))
+            self.context_loop.run_until_complete(
+                asyncio.gather(*asyncio.all_tasks(self.context_loop))
+            )
         except asyncio.CancelledError:
             pending = asyncio.all_tasks(self.context_loop)
             with suppress(asyncio.CancelledError):
@@ -111,7 +118,16 @@ class ConanContext:
                 self.check_github_rate(),
                 self.get_last_conan_base_version(),
             )
-            await asyncio.sleep(15)
+            # Waits to consume the github api times the safety factor
+            # in an hour which should be the expire time
+            await asyncio.sleep(
+                3600
+                / (
+                    self.github_rate_limit
+                    * GITHUB_SAFETY_FACTOR
+                    / (2 * len(self.editable_list))
+                )
+            )
 
     def get_all_local_editables(self):
         """Get all editables that are present on the filesystem"""
@@ -207,13 +223,15 @@ class ConanContext:
             try:
                 async with aiohttp.ClientSession(headers=self.headers) as session:
                     async with session.get(
-                        GITHUB_REPO_WORKFLOW_RUN_URL.format_map(Default(
-                            owner=editable.github_owner,
-                            repo=editable.github_repo,
-                            per_page=20,
-                            conclusion="success",
-                            branch="develop",
-                        ))
+                        GITHUB_REPO_WORKFLOW_RUN_URL.format_map(
+                            Default(
+                                owner=editable.github_owner,
+                                repo=editable.github_repo,
+                                per_page=20,
+                                conclusion="success",
+                                branch="develop",
+                            )
+                        )
                     ) as response:
                         json_body = await response.json()
                         for run in json_body["workflow_runs"][0:10]:
@@ -226,23 +244,25 @@ class ConanContext:
                                 )
                             )
                     async with session.get(
-                        GITHUB_REPO_WORKFLOW_RUN_URL.format_map(Default(
-                            owner=editable.github_owner,
-                            repo=editable.github_repo,
-                            per_page=1,
-                            status="completed",
-                            head_sha=editable.repo.head.commit.hexsha
-                        ))
+                        GITHUB_REPO_WORKFLOW_RUN_URL.format_map(
+                            Default(
+                                owner=editable.github_owner,
+                                repo=editable.github_repo,
+                                per_page=1,
+                                status="completed",
+                                head_sha=editable.repo.head.commit.hexsha,
+                            )
+                        )
                     ) as response:
                         json_body = await response.json()
                         if json_body["total_count"] > 0:
                             run = json_body["workflow_runs"][0]
                             editable.active_sha_run = GithubRunStub(
-                                    run["status"],
-                                    run["conclusion"],
-                                    run["head_sha"],
-                                    isoparse(run["head_commit"]["timestamp"]),
-                                )
+                                run["status"],
+                                run["conclusion"],
+                                run["head_sha"],
+                                isoparse(run["head_commit"]["timestamp"]),
+                            )
                         else:
                             editable.active_sha_run = False
             except aiohttp.ContentTypeError:
@@ -289,9 +309,13 @@ class ConanContext:
             if package_name != editable.package.name:
                 ref_is_local = package_name in self.package_dict
                 if package_name in self.package_dict:
-                    editable.required_conan_ref.append(ConanRef(dep, package=self.package_dict[package_name]))
+                    editable.required_conan_ref.append(
+                        ConanRef(dep, package=self.package_dict[package_name])
+                    )
                 else:
-                    editable.required_conan_ref.append(ConanRef(dep, package=ConanPackage(package_name)))
+                    editable.required_conan_ref.append(
+                        ConanRef(dep, package=ConanPackage(package_name))
+                    )
 
     def compute_conflicts(self):
         """Compute the conflicts between all the editables in editable_list and the workspace"""

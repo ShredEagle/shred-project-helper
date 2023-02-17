@@ -71,18 +71,9 @@ class Workspace:
             ref_to_change.user = new_dependency.user
             ref_to_change.channel = new_dependency.channel
             ref_to_change.revision = new_dependency.revision
-            new_dependency.has_local_editable = ref_to_change.has_local_editable
             return True
 
         return False
-
-    def resolve_conflict(self, old_ref, new_dependency):
-        text = None
-        with open(self.path, "r") as workspace_file:
-            text = workspace_file.read()
-            text = re.sub(re.escape(old_ref.ref), new_dependency.ref, text)
-        with open(self.path, "w") as resolvedfile:
-            resolvedfile.write(text)
 
     def get_dependency_from_package(self, package):
         try:

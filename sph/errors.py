@@ -9,3 +9,6 @@ class EditableNotInFilesystem(SphException):
 
 class RegexpFormatException(SphException):
     pass
+
+class NoEditableException(SphException):
+    pass

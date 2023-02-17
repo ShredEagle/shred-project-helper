@@ -26,6 +26,10 @@ class ConanRef:
             return self._commit_date
         else:
             editable = self.package.editable
+            if not editable:
+                return "No commit date for external dependencies"
+            if not editable.is_in_filesystem:
+                return "Can't get date for non local editable"
             if editable.is_in_filesystem:
                 for run in editable.succesful_develop_runs:
                     if run.head_sha[0:10] == self.version:
@@ -33,8 +37,8 @@ class ConanRef:
                         return self._commit_date
                 if len(editable.succesful_develop_runs) == 0:
                     return "Waiting for github runs..."
-            else:
-                return "Can't get date for non local editable"
+                if self._commit_date is None:
+                    return "Can't find commit date for this reference"
 
     @property
     def ref(self):
@@ -94,14 +98,20 @@ class ConanRef:
                 [(" ", "fail"), f"{self.ref} conflicts with ", (conflicts, "fail")]
             )
         else:
-            # if editable is not None and len(editable.runs_develop) > 0:
-            #     last_run_ref_sha = editable.runs_develop[0].head_sha[0:10]
-            #     if last_run_ref_sha != self.version:
-            #         text_item(
-            #             [
-            #                 (" ", "refname"),
-            #                 f"{self.ref} is ok but not last deployed version",
-            #             ]
-            #         )
-            #         return
-            text_item([(" ", "success"), f"{self.ref} is ok"])
+            icon = (" ", "refname")
+            text = f"{self.ref} is ok - waiting for github workflow..."
+            if editable is not None:
+                if not editable.is_in_filesystem:
+                    text = f"{self.ref} is ok - can't check version (editable not in filesystem)"
+                if len(editable.succesful_develop_runs) > 0:
+                    last_run_ref_sha = editable.succesful_develop_runs[0].head_sha[0:10]
+                    if last_run_ref_sha != self.version:
+                        text = f"{self.ref} is ok but not last deployed version"
+                    else:
+                        icon = (" ", "success")
+                        text = f"{self.ref} is ok"
+            else:
+                icon = (" ", "success")
+                text = f"{self.ref} is ok"
+
+            text_item([icon, text])

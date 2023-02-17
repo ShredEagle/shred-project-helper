@@ -34,6 +34,8 @@ class Workspace:
         if not isinstance(root_data, list):
             root_data = [root_data]
 
+        self.layout_filename = self.data["layout"]
+
         self.root = [ConanRef(root) for root in root_data]
 
         for ref, path in self.data["editables"].items():

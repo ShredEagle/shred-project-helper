@@ -1,4 +1,5 @@
 import ast
+import fileinput
 import asyncio
 import functools
 import os
@@ -6,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+from inspect import isawaitable
 from contextlib import suppress
 from pathlib import Path
 
@@ -65,6 +67,7 @@ class ConanContext:
 
         self.context_running = True
         self.context_loop = asyncio.new_event_loop()
+        self.context_queue =  asyncio.Queue()
         threading.Thread(target=self.run_threaded_loop).start()
 
         self.headers = {
@@ -77,11 +80,34 @@ class ConanContext:
         self.conan_base_newest_version = None
         self.conan_base_regex = r"shred_conan_base\/(\d+\.\d+\.\d+)"
         self.error_log = []
+        
+        self.cleanup = False
+        self.cleanup_path_to_delete = []
 
     @property
     def editable_list(self):
         """Retrieves the editable list from the package_set"""
         return [package.editable for package in self.package_dict.values()]
+
+    def retrieve_build_folder_list(self, workspace):
+        self.cleanup = True
+        self.context_queue.put_nowait(self.build_folder_list_task(workspace))
+
+    async def build_folder_list_task(self, workspace):
+        root_folder = workspace.path.parents[0]
+        with fileinput.input(
+            (root_folder / workspace.layout_filename).resolve()
+        ) as f:
+            for line in f:
+                if line == '[build_folder]\n':
+                    build_folder = Path(f.readline())
+                    build_location = build_folder.parents[1]
+
+        for path in workspace.editable_path_list:
+            path_to_delete = (
+                    root_folder / path / build_location
+            ).resolve()
+            self.cleanup_path_to_delete.append((path_to_delete, os.path.isdir(path_to_delete)))
 
     def stop_context(self):
         """Stops the async tasks in the context_loop"""
@@ -94,13 +120,23 @@ class ConanContext:
         try:
             asyncio.ensure_future(self.data_fetch_loop(), loop=self.context_loop)
             asyncio.ensure_future(self.remote_data_fetch_loop(), loop=self.context_loop)
+            asyncio.ensure_future(self.process_queue(), loop=self.context_loop)
             self.context_loop.run_until_complete(
                 asyncio.gather(*asyncio.all_tasks(self.context_loop))
             )
         except asyncio.CancelledError:
             pending = asyncio.all_tasks(self.context_loop)
             with suppress(asyncio.CancelledError):
-                self.context_loop.run_until_complete(asyncio.gather(*pending))
+                self.context_loop.run_until_complete(asyncio.gather(*pending, self.context_queue.join()))
+
+    async def process_queue(self):
+        while True:
+            task = await self.context_queue.get()
+            if isawaitable(task):
+                await task
+            else:
+                raise TypeError("Context queue can only process awaitable")
+            self.context_queue.task_done()
 
     async def data_fetch_loop(self):
         while True:
@@ -116,7 +152,7 @@ class ConanContext:
             await asyncio.gather(
                 self.get_workflow_run_information(),
                 self.check_github_rate(),
-                self.get_last_conan_base_version(),
+                self.call_conan_search_conan_base(),
             )
             # Waits to consume the github api times the safety factor
             # in an hour which should be the expire time
@@ -152,7 +188,7 @@ class ConanContext:
 
         return False
 
-    def call_conan_search_conan_base(self, future):
+    async def call_conan_search_conan_base(self):
         conan = shutil.which("conan")
         # FIX: this needs to be configurable
         if conan and self.conan_base_newest_version is None:
@@ -164,17 +200,7 @@ class ConanContext:
             )
             for line in output.stdout.splitlines():
                 if self.process_conan_base_version_string(line):
-                    future.set_result(True)
                     break
-        else:
-            future.set_result(False)
-
-    async def get_last_conan_base_version(self):
-        future = self.context_loop.create_future()
-        self.context_loop.call_soon_threadsafe(
-            functools.partial(self.call_conan_search_conan_base, future)
-        )
-        return future
 
     def check_all_repo_dirtyness(self):
         futures = []

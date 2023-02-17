@@ -5,6 +5,8 @@ from time import perf_counter
 from typing import Optional
 
 import witchtui
+from witchtui.widgets import POSITION_CENTER
+
 from sph.conan_ref import ConanRef
 from sph.editable import Editable
 from sph.workspace import Workspace
@@ -122,7 +124,9 @@ class SphUi:
         for ws in workspace_list:
             ws_opened = witchtui.tree_node(ws.path.name)
             if witchtui.is_item_hovered() and witchtui.is_key_pressed("C"):
-                self.install_workspace(ws)
+                # self.install_workspace(ws)
+                self.context.retrieve_build_folder_list(ws)
+
             if ws_opened:
                 for ref in [
                     ref
@@ -475,6 +479,26 @@ class SphUi:
             if witchtui.is_key_pressed("q") or witchtui.is_key_pressed(KEY_ESCAPE):
                 witchtui.set_selected_id(self.id_selected_before_help)
                 self.show_help = False
+
+        if self.context.cleanup:
+            id = witchtui.start_floating_panel(
+                "Cleanup",
+                POSITION_CENTER,
+                witchtui.Percentage(50),
+                witchtui.Percentage(80),
+            )
+            path_not_present = [path for path, present in self.context.cleanup_path_to_delete if not present]
+            path_present = [path for path, present in self.context.cleanup_path_to_delete if present]
+            if len(path_not_present) > 0:
+                witchtui.text_item("These folders are not present")
+                for path in path_not_present:
+                    witchtui.text_item(path)
+            if len(path_present) > 0:
+                witchtui.text_item("Cleanup will delete the ")
+                for path in path_present:
+                    witchtui.text_item(path)
+            witchtui.end_floating_panel()
+            witchtui.set_selected_id(id)
         elif witchtui.is_key_pressed("q") or witchtui.is_key_pressed(KEY_ESCAPE):
             raise SystemExit()
 

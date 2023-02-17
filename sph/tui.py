@@ -2,13 +2,6 @@ import asyncio
 import curses
 import functools
 import os
-import re
-import shutil
-import signal
-import subprocess
-import threading
-from pathlib import Path
-from typing import Optional
 
 import click
 from sph.conan_context import ConanContext

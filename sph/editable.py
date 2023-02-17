@@ -1,15 +1,11 @@
 import ast
 import re
-from datetime import datetime, timedelta
 
 from git import GitCommandError
 from git.repo import Repo
-from ratelimit import limits
+
 from sph.conan_package import ConanPackage
-
-from sph.conan_ref import ConanRef
 from sph.semver import Semver
-
 
 
 class Editable:
@@ -35,7 +31,9 @@ class Editable:
                             if isinstance(class_node, ast.Assign):
                                 for target in class_node.targets:
                                     if target.id == "name":
-                                        self.package = ConanPackage(class_node.value.value , self)
+                                        self.package = ConanPackage(
+                                            class_node.value.value, self
+                                        )
 
             self.last_workflow_call = None
             self.succesful_develop_runs = []
@@ -162,45 +160,3 @@ class Editable:
                 self.required_conan_ref,
             )
         )
-
-    # def check_workflow(self):
-    #     now = datetime.now()
-    #     if self.last_workflow_call and now - self.last_workflow_call < timedelta(
-    #         seconds=20
-    #     ):
-    #         return self.current_run
-
-    #     self.last_workflow_call = now
-
-    #     try:
-    #         runs_queued = self.gh_repo.get_workflow_runs(
-    #             branch=self.repo.active_branch.name, status="queued"
-    #         )
-    #         runs_in_progress = self.gh_repo.get_workflow_runs(
-    #             branch=self.repo.active_branch.name, status="in_progress"
-    #         )
-    #         runs_completed = self.gh_repo.get_workflow_runs(
-    #             branch=self.repo.active_branch.name, status="completed"
-    #         )
-    #         # FIX: should be able to configure develop name branch
-    #         runs_develop = self.gh_repo.get_workflow_runs(
-    #             branch="develop", status="completed"
-    #         )
-    #         if (
-    #             runs_queued.totalCount > 0
-    #             or runs_in_progress.totalCount > 0
-    #             or runs_completed.totalCount > 0
-    #         ):
-    #             for run in (
-    #                 list(runs_queued) + list(runs_in_progress) + list(runs_completed)
-    #             ):
-    #                 if run.head_sha == self.repo.head.commit.hexsha:
-    #                     self.current_run = run
-
-    #         for run in runs_develop[0:10]:
-    #             self.runs_develop.append(
-    #                 GithubRunStub(run.status, run.conclusion, run.head_sha)
-    #             )
-
-    #     except Exception:
-    #         self.current_run = None

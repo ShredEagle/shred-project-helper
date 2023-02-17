@@ -446,10 +446,6 @@ class SphUi:
 
         witchtui.end_layout()
 
-        # TODO: find a way to reload the package_dict from the context
-        # if witchtui.is_key_pressed("r"):
-        #     self.loop.run_safe_in_executor(None, self.load_editables)
-
         witchtui.start_status_bar("status_bar")
         witchtui.text_item(
             f" FPS: {real_fps:4.2f}, Github rate limit: {self.context.github_rate_limit - self.context.github_rate_remaining}/{self.context.github_rate_limit}",

@@ -995,6 +995,18 @@ files = [
 ]
 
 [[package]]
+name = "witchtui"
+version = "0.1.2"
+description = "A Immediate Command line User Interface for Python"
+category = "main"
+optional = false
+python-versions = ">=3.10,<4.0"
+files = [
+    {file = "witchtui-0.1.2-py3-none-any.whl", hash = "sha256:4f8d3eaf56a11038a97864696bde3534a81e3a9054b8c4840034dcc48c5460f2"},
+    {file = "witchtui-0.1.2.tar.gz", hash = "sha256:c1935d892821d4ab60f4c5b7c86bd11fcf42105594ccf6a7e2eb7119560cea96"},
+]
+
+[[package]]
 name = "wrapt"
 version = "1.14.1"
 description = "Module for decorators, wrappers and monkey patching."
@@ -1156,4 +1168,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "6e4744435003d7d606ee3518f6349f0bd0ce9286a94fe80d96a59af1138a2b38"
+content-hash = "763ee0317b537cf1a93eea43d6d738b938125a4903ccf502ac9ae884e1d600f5"

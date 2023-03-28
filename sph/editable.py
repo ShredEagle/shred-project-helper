@@ -65,21 +65,26 @@ class Editable:
                         self.conan_base_version = Semver(match.group(1))
 
     def update_rev_list(self, future):
-        rev_list_regex = r"(\d)\t(\d)"
-        rev_list = self.repo.git.rev_list(
-            [
-                "--left-right",
-                "--count",
-                f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}",
-            ]
-        )
-        self.rev_list = re.search(rev_list_regex, rev_list)
+        if (self.repo.active_branch.tracking_branch()):
+            rev_list_regex = r"(\d)\t(\d)"
+            rev_list = self.repo.git.rev_list(
+                [
+                    "--left-right",
+                    "--count",
+                    f"{self.repo.active_branch}...{self.repo.active_branch.tracking_branch()}",
+                ]
+            )
+            self.rev_list = re.search(rev_list_regex, rev_list)
 
         if not future.cancelled():
             future.set_result(True)
 
     def check_repo_dirty(self, future):
         try:
+            # if repo was dirty and is now clean we need to empty
+            # the status of active_sha_run
+            if self.is_repo_dirty and not self.repo.is_dirty():
+                self.active_sha_run = None
             self.is_repo_dirty = self.repo.is_dirty()
         except Exception:
             if not future.cancelled():

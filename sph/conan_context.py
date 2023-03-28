@@ -228,12 +228,13 @@ class ConanContext:
                                 owner=editable.github_owner,
                                 repo=editable.github_repo,
                                 per_page=20,
-                                conclusion="success",
+                                status="success",
                                 branch="develop",
                             )
                         )
                     ) as response:
                         json_body = await response.json()
+                        editable.succesful_develop_runs = []
                         for run in json_body["workflow_runs"][0:10]:
                             editable.succesful_develop_runs.append(
                                 GithubRunStub(
@@ -243,6 +244,7 @@ class ConanContext:
                                     isoparse(run["head_commit"]["timestamp"]),
                                 )
                             )
+                            editable.succesful_develop_runs.sort(reverse=True, key=lambda x: x.date)
                     async with session.get(
                         GITHUB_REPO_WORKFLOW_RUN_URL.format_map(
                             Default(

@@ -1,0 +1,50 @@
+--- workspace in repo
+
+
+ROOTREPO=snacman
+WORKSPACE=complete
+PROFILE=clang15-win
+SUFFIX=clang15
+
+ROOTREPO=snacman
+WORKSPACE=complete
+PROFILE=game
+SUFFIX="Visual Studio17"
+WS_SUFFIX="vscode"
+
+mkdir "ws_${ROOTREPO}_${WORKSPACE}_${WS_SUFFIX}" && cd "ws_${ROOTREPO}_${WORKSPACE}_${WS_SUFFIX}"
+
+# For each config #
+
+## Clang
+mkdir Release && pushd Release
+conan workspace install "../../${ROOTREPO}/conan/workspaces/${WORKSPACE}.yml" -pr:h ${PROFILE} -pr:b build/Windows --build missing -o *:build_tests=True
+cmake -G "Unix Makefiles" -DCMAKE_POLICY_DEFAULT_CMP0091="NEW" -DCMAKE_TOOLCHAIN_FILE="../../${ROOTREPO}/build-conan-${SUFFIX}/generators/conan_toolchain.cmake" -DCMAKE_BUILD_TYPE=Release "../../${ROOTREPO}/conan/workspaces"
+
+popd && mkdir Debug && pushd Debug
+conan workspace install "../../${ROOTREPO}/conan/workspaces/${WORKSPACE}.yml" -pr:h ${PROFILE}-dev -pr:b build/Windows --build missing -o *:build_tests=True
+cmake -G "Unix Makefiles" -DCMAKE_POLICY_DEFAULT_CMP0091="NEW" -DCMAKE_TOOLCHAIN_FILE="../../${ROOTREPO}/build-conan-${SUFFIX}/generators/conan_toolchain.cmake" -DCMAKE_BUILD_TYPE=Debug "../../${ROOTREPO}/conan/workspaces"
+
+popd
+
+
+## VisualStudio
+conan workspace install "../${ROOTREPO}/conan/workspaces/${WORKSPACE}.yml" -pr:h ${PROFILE}     -pr:b build/Windows --build missing -o *:build_tests=True
+conan workspace install "../${ROOTREPO}/conan/workspaces/${WORKSPACE}.yml" -pr:h ${PROFILE}-dev -pr:b build/Windows --build missing -o *:build_tests=True
+
+cmake -DCMAKE_POLICY_DEFAULT_CMP0091="NEW" -DCMAKE_TOOLCHAIN_FILE="../${ROOTREPO}/build-conan-${SUFFIX}/generators/conan_toolchain.cmake" "../${ROOTREPO}/conan/workspaces"
+
+## IMPORTANT when creating the workspace for the first time, it is important to set the CMake Tools extension "cmake.buildDirectory" to the CMake build dir (i.e. pwd at this point). This setting seems to be stored in the VScode workspace config (the file with .code-workspace extension).
+
+##DOES NOT WORK ATM: The presets specify the binary folder, so:
+## *the inclusion of conanworkspace from the binary dir does not work (might be fixed easily)
+## *everything would be output in this preset binary folder (is probably a major problem)
+#cp ../${ROOTREPO}/CMakeUserPresets.json .
+#cp ../${ROOTREPO}/conan/workspaces/CMakeLists.txt .
+##
+
+## Cleanup and rebuid (e.g updgrade dep
+cdpcg && cd "ws_${ROOTREPO}_${WORKSPACE}_${WS_SUFFIX}" && cd ..
+rm -rf entity/build-conan-Visual\ Studio17/ graphics/build-conan-Visual\ Studio17/ handy/build-conan-Visual\ Studio17/ math/build-conan-Visual\ Studio17/ snacman/build-conan-Visual\ Studio17/ MarkovJunior.cpp/build-conan-Visual\ Studio17/
+cd -
+#Then visual studio procedure

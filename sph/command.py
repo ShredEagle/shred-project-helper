@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-import readline
+import re
 import subprocess
 import configparser
 from pathlib import Path
@@ -38,14 +38,13 @@ def get_conan_info_command_list(build_os, profile, root_repo, temp_file_path):
 
 
 def get_conan_workspace_install_command_list(
-        root_repo, workspace, profile, build_os
+        root_repo, workspace, profile, build_os, multi=False
 ):
     command_list = [
         "conan",
         "workspace",
         "install",
-        "--update",
-        f"../../{root_repo}/conan/workspaces/{workspace}.yml",
+        f"{'../' if not multi else ''}../{root_repo}/conan/workspaces/{workspace}.yml",
         "-pr:h",
         profile,
         "-pr:b",
@@ -74,10 +73,11 @@ def get_cmake_command_list(root_repo, suffix, build_type=None):
         ]
     else:
         command_list += [
+            f"-DCMAKE_TOOLCHAIN_FILE=../{root_repo}/"
             f"build-conan-{suffix}/generators/conan_toolchain.cmake",
         ]
 
-    command_list += [f"../../{root_repo}/conan/workspaces"]
+    command_list += [f"{'../' if build_type else ''}../{root_repo}/conan/workspaces"]
 
     return command_list
 
@@ -90,8 +90,13 @@ def install():
     suffix = os.getenv("SUFFIX")
     build_os = os.getenv("OS")
 
+    if not Path(root_repo).exists():
+        print(f"Not {root_repo} directory (probably wrong location to launch sph)")
+        return
+
     ws_dir = f"ws_{root_repo}_{workspace}_{suffix}"
     ensure_workspace_directory(ws_dir)
+
     os.chdir(ws_dir)
 
     if compiler in ["gcc", "clang"]:
@@ -125,13 +130,13 @@ def install():
         # Run Visual Studio commands
         subprocess.run(
             get_conan_workspace_install_command_list(
-                root_repo, workspace, profile, build_os
+                root_repo, workspace, profile, build_os, True
             ),
             check=False,
         )
         subprocess.run(
             get_conan_workspace_install_command_list(
-                root_repo, workspace, f"{profile}-dev", build_os
+                root_repo, workspace, f"{profile}-dev", build_os, True
             ),
             check=False,
         )
@@ -141,8 +146,6 @@ def install():
 def setup(config_file):
     config = load_config(config_file)
     compiler = ["clang16", "gcc14.0", "Visual Studio17"]
-    readline.set_completer_delims(" \t\n;")
-    readline.parse_and_bind("tab: complete")
     profile = input("Profile name: ")
     config[profile] = {
         "ROOTREPO": input("Enter root repo (default: snacman): ") or "snacman",
@@ -188,7 +191,7 @@ def setup(config_file):
     print(f"Config file {config_file} has been created.")
 
 
-def check():
+def check(verbose=False):
     root_repo = os.getenv("ROOTREPO")
     workspace = os.getenv("WORKSPACE")
     profile = os.getenv("PROFILE")
@@ -277,13 +280,20 @@ def check():
     os.chdir(cwd)
 
     temp_file_path = "tmp_conan_info"
-    subprocess.run(
+    # TODO(franz): check if process runs correctly
+    result = subprocess.run(
         get_conan_info_command_list(
             build_os, profile, root_repo, temp_file_path
         ),
-        capture_output=True,
         check=False,
+        stdout=None if verbose else subprocess.DEVNULL,
+        stderr=None if verbose else subprocess.PIPE,
     )
+
+    if result.returncode == 1:
+        if not verbose:
+            print(result.stderr.decode("utf-8"))
+        return
 
     with open(temp_file_path, "r", encoding="utf-8") as f:
         refs = json.loads(f.read())
@@ -329,6 +339,47 @@ def check():
     os.chdir(cwd)
     Path.unlink(temp_file_path)
 
+# Allows to bump all reusable workflows versions
+
+regex_read = "uses: (shredeagle/reusable-workflows)/\\.github/workflows/(?P<workflow>.+\\.yml)@(?P<version>.+)"
+regex_substitute = "@.+"
+
+
+def substitute_version(file, new_version):
+    with open(file, "r+") as f:
+        outlines = []
+        for line in f.readlines():
+            if re.search(regex_read, line):
+                line = re.sub(regex_substitute, "@{}".format(new_version), line)
+            outlines.append(line)
+        f.seek(0)
+        f.truncate(0)
+        f.writelines(outlines)
+
+
+def print_version(file):
+    with open(file) as f:
+        for line in f.readlines():
+            m = re.search(regex_read, line)
+            if m:
+                print("{}:\tWorkflow {} is version {}".format(os.path.basename(file), m["workflow"], m["version"]))
+
+
+def walk_workflows(repo, callback, *args):
+    workflows_folder = os.path.join(repo, ".github/workflows")
+    if not os.path.exists(workflows_folder):
+        print("Cannot find workflows folder in {}.".format(os.getcwd()))
+        return
+    for file in os.listdir(workflows_folder):
+        file = os.path.join(workflows_folder, file)
+        if file.endswith(".yml"):
+            callback(file, *args)
+
+def set_workflow_version(repo, version):
+    walk_workflows(repo, substitute_version, version)
+
+def get_workflow_version(repo):
+    walk_workflows(repo, print_version)
 
 def main():
     default_config_path = get_default_config_path()
@@ -337,6 +388,30 @@ def main():
         description="Setup and build project using conan and cmake."
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    parser_workflow = subparsers.add_parser(
+        "workflow", help="Change workflow version"
+    )
+    parser_workflow.add_argument(
+        "-r",
+        "--repo",
+        type=str,
+        default=".",
+        help="Path to the configuration file",
+    )
+    parser_workflow.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        help="Show version",
+    )
+    parser_workflow.add_argument(
+        "version",
+        nargs="?",
+        type=str,
+        help="Version",
+    )
+
 
     # Subcommand for populating config
     parser_populate = subparsers.add_parser(
@@ -382,6 +457,13 @@ def main():
         "check", help="Check conan dependencies in workspace"
     )
     parser_check.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Verbose output",
+    )
+    parser_check.add_argument(
         "-c",
         "--config",
         type=str,
@@ -397,7 +479,12 @@ def main():
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    if args.command == "setup":
+    if args.command == "workflow":
+        if args.list:
+            get_workflow_version(args.repo)
+        else:
+            set_workflow_version(args.repo, args.version)
+    elif args.command == "setup":
         setup(args.config)
     elif args.command == "config":
         subprocess.run(["cat", get_default_config_path()], check=False)
@@ -416,6 +503,6 @@ def main():
             if args.profile
             else config[config["default"]["profile"]]
         )
-        check()
+        check(args.verbose)
     else:
         parser.print_help()
